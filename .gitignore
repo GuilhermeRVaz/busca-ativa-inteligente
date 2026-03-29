@@ -1,0 +1,48 @@
+# --- Python basics ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.so
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- Packages / builds ---
+build/
+dist/
+*.egg-info/
+
+# --- Testing / coverage ---
+.pytest_cache/
+.coverage
+htmlcov/
+
+# --- IDE / tooling ---
+.DS_Store
+.idea/
+.vscode/
+
+# --- Environment & secrets ---
+.env
+.env.*
+*.pem
+*.key
+*.crt
+
+# --- Logs & runtime artifacts ---
+*.log
+*.pid
+*.sqlite
+*.db
+
+# --- App data (student conversations/campaigns) ---
+data/storage/
+data/**/*.json
+
+# --- Local caches ---
+/.cache/
+*.cache
+
+service_account.json
