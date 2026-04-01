@@ -1,8 +1,10 @@
 import argparse
+from pathlib import Path
 
 from app.main import app
 from core.config import settings
 from services.campaign_orchestrator import CampaignOrchestrator
+from services.sender import save_sent_campaign_to_json, send_campaign
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -16,18 +18,33 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def run_campaign(args: argparse.Namespace) -> None:
+def run_campaign(args: argparse.Namespace) -> str:
     orchestrator = CampaignOrchestrator()
     result = orchestrator.run(
         campaign_type=args.tipo,
         day=args.dia,
         report_path=args.report_path,
     )
+    sent_campaign = send_campaign(result["campaign"])
+    sent_file_path = save_sent_campaign_to_json(
+        sent_campaign,
+        campaign_type=result["campaign_type"],
+        day=result.get("target_day", args.dia),
+        output_dir=Path(result["file_path"]).parent,
+    )
+    sent_count = sum(1 for item in sent_campaign if item.get("status") == "sent")
+    failed_count = sum(1 for item in sent_campaign if item.get("status") == "failed")
+
     print(f"Campanha gerada: {result['campaign_type']}")
     print(f"Arquivo salvo: {result['file_path']}")
+    print(f"Arquivo enviado salvo: {sent_file_path}")
     print(f"Alunos processados: {result['processed_students']}")
     print(f"Itens gerados: {result['generated_items']}")
     print(f"Alunos sem contato: {result['students_without_contact']}")
+    print(f"Total de itens: {len(sent_campaign)}")
+    print(f"Enviados: {sent_count}")
+    print(f"Falharam: {failed_count}")
+    return sent_file_path
 
 
 def run_server() -> None:

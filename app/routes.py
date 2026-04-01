@@ -1,8 +1,5 @@
 from fastapi import APIRouter, HTTPException
 
-from ai.classifier import classify_message
-from ai.responder import generate_reply
-from data.repository import repository
 from services.campaign_service import campaign_service
 from services.webhook_service import webhook_service
 
@@ -17,30 +14,14 @@ def health_check() -> dict:
 
 @router.post("/webhook/messages")
 def receive_message(payload: dict) -> dict:
-    message = webhook_service.parse_incoming(payload)
-    if not message:
-        raise HTTPException(status_code=400, detail="Invalid webhook payload")
-
-    classification = classify_message(message["text"])
-    reply = generate_reply(message["text"], classification)
-
-    repository.save_message(
-        conversation_id=message["conversation_id"],
-        direction="inbound",
-        text=message["text"],
-        metadata={"classification": classification},
-    )
-    repository.save_message(
-        conversation_id=message["conversation_id"],
-        direction="outbound",
-        text=reply,
-        metadata={"source": "ai"},
-    )
+    result = webhook_service.process_incoming(payload)
 
     return {
+        "ok": True,
         "received": True,
-        "classification": classification,
-        "reply": reply,
+        "classification": result["classificacao"],
+        "telefone": result["telefone"],
+        "data_hora": result["data_hora"],
     }
 
 

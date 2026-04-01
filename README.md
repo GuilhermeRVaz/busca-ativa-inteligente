@@ -1,32 +1,30 @@
 # busca-ativa-inteligente
 
-Simple Python project scaffold for an active outreach system that:
+Projeto FastAPI para busca ativa escolar com:
 
-- sends WhatsApp messages using Evolution API
-- receives incoming messages via FastAPI webhook
-- classifies and drafts responses with an AI layer
-- stores campaign and conversation data locally
-- reads the legacy consolidated report to generate test campaigns
+- envio de mensagens via WhatsApp/Evolution API
+- recebimento de mensagens via webhook
+- classificacao de respostas com IA
+- leitura de contatos em Google Sheets
+- persistencia de interacoes em Google Sheets com backup local em JSON
 
-## Project structure
+## Estrutura
 
 ```text
 busca-ativa-inteligente/
-├── app/
-├── core/
-├── services/
-├── ai/
-├── data/
-├── legacy/
-├── tests/
-├── utils/
-├── .env.example
-├── main.py
-├── README.md
-└── requirements.txt
+|-- app/
+|-- core/
+|-- services/
+|-- ai/
+|-- data/
+|-- providers/
+|-- tests/
+|-- .env.example
+|-- main.py
+|-- README.md
 ```
 
-## Quick start
+## Inicio rapido
 
 ```bash
 python -m venv .venv
@@ -36,31 +34,94 @@ copy .env.example .env
 python main.py
 ```
 
-The API will start at `http://127.0.0.1:8000`.
+A API sobe em `http://127.0.0.1:8000`.
 
-## Main endpoints
+## Endpoints
 
 - `GET /health`
 - `POST /webhook/messages`
 - `POST /campaigns/send`
 
-## Campaign test flow
+## Configuracao do .env
 
-Generate a campaign from the legacy consolidated report:
+Preencha pelo menos estas variaveis:
+
+```env
+APP_NAME=busca-ativa-inteligente
+APP_HOST=0.0.0.0
+APP_PORT=8000
+DEBUG=true
+
+WEBHOOK_VERIFY_TOKEN=change-me
+DATA_DIR=data/storage
+CONSOLIDATED_REPORT_PATH=relatorios/Relatorio_Consolidado_BuscaAtiva.xlsx
+
+GOOGLE_SERVICE_ACCOUNT_FILE=service-account.json
+
+GOOGLE_SHEET_CONTATOS_URL=https://docs.google.com/spreadsheets/d/...
+GOOGLE_SHEET_CONTATOS_WORKSHEET=Contatos
+
+GOOGLE_SHEET_DADOS_URL=https://docs.google.com/spreadsheets/d/...
+GOOGLE_SHEET_DADOS_WORKSHEET=Interacoes
+```
+
+## Google Sheets
+
+O sistema usa duas planilhas separadas:
+
+- contatos: usada para leitura dos alunos e telefones de campanha
+- dados: usada para registrar as interacoes recebidas via webhook
+
+### Como compartilhar com a service account
+
+1. Crie ou baixe a service account no Google Cloud.
+2. Salve o JSON localmente no projeto ou em outro caminho seguro.
+3. Configure `GOOGLE_SERVICE_ACCOUNT_FILE` apontando para esse arquivo.
+4. Copie o e-mail da service account.
+5. Abra cada planilha no Google Sheets e clique em `Compartilhar`.
+6. Compartilhe as duas planilhas com o e-mail da service account com permissao de `Editor`.
+
+## Estrutura esperada das abas
+
+### Aba de contatos
+
+Pode usar os nomes atuais de colunas. O sistema aceita aliases comuns como:
+
+- `Nome do Aluno`, `nome_aluno`, `student_name`
+- `Turma`, `class_name`
+- `Telefone 1`, `Telefone 2`, `Telefone 3`
+
+### Aba de dados
+
+Use estes cabecalhos:
+
+- `data_hora`
+- `telefone`
+- `mensagem`
+- `classificacao`
+- `campaign_id`
+- `origem`
+
+`origem` comeca como `whatsapp`, o que facilita futuras integracoes.
+
+## Resiliencia
+
+Toda interacao recebida via webhook e salva primeiro em:
+
+- `data/storage/incoming_messages.json`
+
+Depois disso, o sistema tenta gravar na planilha de dados. Se o Google Sheets falhar, o processamento continua e o backup local permanece salvo.
+
+## Fluxo de campanha
+
+Gerar campanha de faltas:
 
 ```bash
 python main.py --tipo faltas --dia 25
 ```
 
-Generate a simple meeting campaign from contacts:
+Gerar campanha de reuniao:
 
 ```bash
 python main.py --tipo reuniao
 ```
-
-## Notes
-
-- The Evolution API integration is a minimal placeholder using `requests`.
-- The AI layer is mocked so the project runs without external providers.
-- Storage uses local JSON files to keep the initial version simple.
-- The first campaign tests use the existing consolidated Excel report and Google Sheets contacts.

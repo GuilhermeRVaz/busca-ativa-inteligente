@@ -15,9 +15,17 @@ def test_generate_campaign_with_single_phone() -> None:
         }
     ]
 
-    campaign = campaign_engine.generate_campaign(absences, contacts, school_name="Escola Teste")
+    campaign = campaign_engine.generate_campaign(
+        absences,
+        contacts,
+        school_name="Escola Teste",
+        campaign_id="campaign_test",
+        created_at="2026-03-30T08:00:00",
+    )
 
     assert len(campaign) == 1
+    assert campaign[0]["campaign_id"] == "campaign_test"
+    assert campaign[0]["created_at"] == "2026-03-30T08:00:00"
     assert campaign[0]["student_name"] == "Joao Silva"
     assert campaign[0]["class_name"] == "7A"
     assert campaign[0]["phone"] == "18999991111"
@@ -37,7 +45,12 @@ def test_generate_campaign_with_multiple_phones() -> None:
         }
     ]
 
-    campaign = campaign_engine.generate_campaign(absences, contacts)
+    campaign = campaign_engine.generate_campaign(
+        absences,
+        contacts,
+        campaign_id="campaign_test",
+        created_at="2026-03-30T08:00:00",
+    )
 
     assert len(campaign) == 3
     assert {item["phone"] for item in campaign} == {
@@ -58,7 +71,12 @@ def test_generate_campaign_ignores_invalid_phones() -> None:
         }
     ]
 
-    campaign = campaign_engine.generate_campaign(absences, contacts)
+    campaign = campaign_engine.generate_campaign(
+        absences,
+        contacts,
+        campaign_id="campaign_test",
+        created_at="2026-03-30T08:00:00",
+    )
 
     assert len(campaign) == 1
     assert campaign[0]["phone"] == "18999992222"
@@ -67,7 +85,12 @@ def test_generate_campaign_ignores_invalid_phones() -> None:
 def test_generate_campaign_without_contact_does_not_break() -> None:
     absences = [{"student_name": "Aluno Sem Contato", "class_name": "9A", "absence_days": "25"}]
 
-    campaign = campaign_engine.generate_campaign(absences, contacts=[])
+    campaign = campaign_engine.generate_campaign(
+        absences,
+        contacts=[],
+        campaign_id="campaign_test",
+        created_at="2026-03-30T08:00:00",
+    )
 
     assert campaign == []
 
@@ -76,6 +99,8 @@ def test_save_campaign_to_json(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(campaign_engine.settings, "data_dir", tmp_path)
     campaign = [
         {
+            "campaign_id": "campaign_test",
+            "created_at": "2026-03-30T08:00:00",
             "student_name": "Joao Silva",
             "class_name": "7A",
             "phone": "18999991111",

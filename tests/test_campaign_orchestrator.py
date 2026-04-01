@@ -53,4 +53,8 @@ def test_orchestrator_generates_json_and_summary(tmp_path: Path, monkeypatch) ->
     assert result["generated_items"] == 1
     assert result["processed_students"] == 2
     assert result["students_without_contact"] == 1
+    assert result["campaign_id"].startswith("campaign_faltas_dia_25_")
+    assert result["created_at"]
     assert Path(result["file_path"]).exists()
+    assert result["campaign"][0]["campaign_id"] == result["campaign_id"]
+    assert result["campaign"][0]["created_at"] == result["created_at"]

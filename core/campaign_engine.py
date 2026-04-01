@@ -37,10 +37,14 @@ def generate_campaign(
     contacts: list[dict],
     campaign_type: str = "faltas",
     *,
+    campaign_id: str | None = None,
+    created_at: str | None = None,
     school_name: str = "Escola",
 ) -> list[dict]:
     campaign: list[dict] = []
     contacts_index = _build_contacts_index(contacts)
+    resolved_campaign_id = campaign_id or f"campaign_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    resolved_created_at = created_at or datetime.now().isoformat(timespec="seconds")
 
     for absence in absences:
         student_name = absence.get("student_name", "").strip()
@@ -68,6 +72,8 @@ def generate_campaign(
 
             campaign.append(
                 {
+                    "campaign_id": resolved_campaign_id,
+                    "created_at": resolved_created_at,
                     "student_name": student_name,
                     "class_name": class_name or str(contact.get("class_name", "")).strip(),
                     "phone": phone,
