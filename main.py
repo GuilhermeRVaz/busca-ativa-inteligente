@@ -27,6 +27,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Limita a quantidade de itens enviados para homologacao controlada",
     )
     parser.add_argument(
+        "--offset-items",
+        type=int,
+        default=0,
+        help="Pula os primeiros itens da campanha para comecar de um aluno especifico",
+    )
+    parser.add_argument(
         "--diagnostico",
         action="store_true",
         help="Executa validacoes de pre-voo para producao",
@@ -41,13 +47,14 @@ def run_campaign(args: argparse.Namespace) -> str:
         day=args.dia,
         report_path=args.report_path,
     )
-    campaign = _limit_campaign(result["campaign"], args.max_items)
+    campaign = _slice_campaign(result["campaign"], args.offset_items, args.max_items)
     mode = "dry-run" if args.dry_run else "real"
 
     print(f"Modo de envio: {mode}")
     print(f"Instancia Evolution: {evolution_api_service.get_instance_name()}")
     print(f"Tipo de campanha: {result['campaign_type']}")
     print(f"Itens planejados: {len(result['campaign'])}")
+    print(f"Itens pulados: {max(args.offset_items, 0)}")
     print(f"Itens a enviar: {len(campaign)}")
 
     sent_campaign = send_campaign(campaign, dry_run=args.dry_run)
@@ -111,10 +118,16 @@ def run_server() -> None:
     )
 
 
-def _limit_campaign(campaign: list[dict], max_items: int | None) -> list[dict]:
+def _slice_campaign(
+    campaign: list[dict],
+    offset_items: int | None,
+    max_items: int | None,
+) -> list[dict]:
+    offset = max(offset_items or 0, 0)
+    sliced = campaign[offset:]
     if max_items is None or max_items <= 0:
-        return campaign
-    return campaign[:max_items]
+        return sliced
+    return sliced[:max_items]
 
 
 if __name__ == "__main__":

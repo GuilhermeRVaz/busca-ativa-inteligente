@@ -13,9 +13,41 @@ class WebhookService:
     def process_incoming(self, payload: dict[str, Any]) -> dict[str, str]:
         logger.info("Webhook recebido")
 
+        if not self._should_process_payload(payload):
+            logger.info("Webhook ignorado | evento nao elegivel para interacao")
+            return {
+                "telefone": "",
+                "mensagem": "",
+                "classificacao": "IGNORADO",
+                "intencao": "IGNORADO",
+                "motivo": "IGNORADO",
+                "observacao": "evento ignorado",
+                "student_name": "",
+                "campaign_id": "",
+                "origem": "whatsapp",
+                "data_hora": datetime.now().isoformat(),
+            }
+
+        if repository.interacao_ja_registrada(payload):
+            logger.info("Webhook ignorado | mensagem duplicada")
+            return {
+                "telefone": "",
+                "mensagem": "",
+                "classificacao": "IGNORADO",
+                "intencao": "IGNORADO",
+                "motivo": "IGNORADO",
+                "observacao": "mensagem duplicada",
+                "student_name": "",
+                "campaign_id": "",
+                "origem": "whatsapp",
+                "data_hora": datetime.now().isoformat(),
+            }
+
         telefone = self._extract_phone(payload)
         mensagem = self._extract_message(payload)
         campaign_id = self._extract_campaign_id(payload)
+        push_name = self._extract_push_name(payload)
+        student_name = repository.resolver_nome_aluno(telefone, push_name=push_name)
         data_hora = datetime.now().isoformat()
 
         if not mensagem:
@@ -29,6 +61,20 @@ class WebhookService:
         motivo = classificacao.get("motivo", "OUTRO")
         observacao = classificacao.get("observacao", "nao foi possivel classificar")
 
+        repository.save_message(
+            conversation_id=telefone,
+            direction="inbound",
+            text=mensagem,
+            metadata={
+                "campaign_id": campaign_id,
+                "student_name": student_name,
+                "intencao": intencao,
+                "motivo": motivo,
+                "observacao": observacao,
+                "raw_payload": payload,
+            },
+        )
+
         repository.salvar_interacao(
             {
                 "telefone": telefone,
@@ -37,6 +83,7 @@ class WebhookService:
                 "intencao": intencao,
                 "motivo": motivo,
                 "observacao": observacao,
+                "student_name": student_name,
                 "data_hora": data_hora,
                 "campaign_id": campaign_id,
                 "origem": "whatsapp",
@@ -45,8 +92,9 @@ class WebhookService:
         )
 
         logger.info(
-            "Webhook processado | telefone=%s | classificacao=%s | motivo=%s | campaign_id=%s | data_hora=%s",
+            "Webhook processado | telefone=%s | aluno=%s | classificacao=%s | motivo=%s | campaign_id=%s | data_hora=%s",
             telefone,
+            student_name,
             intencao,
             motivo,
             campaign_id,
@@ -60,6 +108,7 @@ class WebhookService:
             "intencao": intencao,
             "motivo": motivo,
             "observacao": observacao,
+            "student_name": student_name,
             "campaign_id": campaign_id,
             "origem": "whatsapp",
             "data_hora": data_hora,
@@ -98,6 +147,12 @@ class WebhookService:
             if text:
                 return text
         return ""
+
+    def _extract_push_name(self, payload: dict[str, Any]) -> str:
+        return str(payload.get("data", {}).get("pushName", "")).strip()
+
+    def _should_process_payload(self, payload: dict[str, Any]) -> bool:
+        return repository._should_persist_incoming_payload(payload)
 
 
 webhook_service = WebhookService()

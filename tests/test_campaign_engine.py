@@ -29,6 +29,7 @@ def test_generate_campaign_with_single_phone() -> None:
     assert campaign[0]["student_name"] == "Joao Silva"
     assert campaign[0]["class_name"] == "7A"
     assert campaign[0]["phone"] == "18999991111"
+    assert campaign[0]["contact_phone_field"] == "phone1"
     assert campaign[0]["status"] == "pending"
     assert campaign[0]["message"]
     assert campaign[0]["template_id"]
@@ -52,12 +53,9 @@ def test_generate_campaign_with_multiple_phones() -> None:
         created_at="2026-03-30T08:00:00",
     )
 
-    assert len(campaign) == 3
-    assert {item["phone"] for item in campaign} == {
-        "18999990001",
-        "18999990002",
-        "18999990003",
-    }
+    assert len(campaign) == 1
+    assert campaign[0]["phone"] == "18999990001"
+    assert campaign[0]["contact_phone_field"] == "phone1"
 
 
 def test_generate_campaign_ignores_invalid_phones() -> None:
@@ -80,6 +78,7 @@ def test_generate_campaign_ignores_invalid_phones() -> None:
 
     assert len(campaign) == 1
     assert campaign[0]["phone"] == "18999992222"
+    assert campaign[0]["contact_phone_field"] == "phone3"
 
 
 def test_generate_campaign_without_contact_does_not_break() -> None:
@@ -104,6 +103,7 @@ def test_save_campaign_to_json(tmp_path: Path, monkeypatch) -> None:
             "student_name": "Joao Silva",
             "class_name": "7A",
             "phone": "18999991111",
+            "contact_phone_field": "phone1",
             "message": "Teste",
             "status": "pending",
             "template_id": "absence_followup_1",

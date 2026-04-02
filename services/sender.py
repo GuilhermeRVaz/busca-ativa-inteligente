@@ -7,6 +7,7 @@ from typing import Any
 
 from core.config import settings
 from core.logging import get_logger
+from data.repository import repository
 from services.evolution_api import evolution_api_service
 
 
@@ -55,6 +56,20 @@ def send_campaign(
             updated_item["status"] = "sent" if send_result.get("success") else "failed"
             updated_item["failure_reason"] = send_result.get("error")
             _log_send_result(updated_item, normalized_phone)
+            repository.save_message(
+                conversation_id=normalized_phone,
+                direction="outbound",
+                text=str(updated_item.get("message", "")).strip(),
+                metadata={
+                    "campaign_id": updated_item.get("campaign_id", ""),
+                    "student_name": updated_item.get("student_name", ""),
+                    "class_name": updated_item.get("class_name", ""),
+                    "provider_message_id": updated_item.get("provider_message_id"),
+                    "status": updated_item.get("status"),
+                    "failure_reason": updated_item.get("failure_reason"),
+                    "dry_run": dry_run,
+                },
+            )
 
         updated_campaign.append(updated_item)
 

@@ -106,6 +106,7 @@ class LocalRepository:
     def salvar_interacao(self, data: dict[str, Any]) -> None:
         entry = {
             "data_hora": str(data.get("data_hora", "")).strip(),
+            "student_name": str(data.get("student_name", "")).strip(),
             "telefone": str(data.get("telefone", "")).strip(),
             "mensagem": str(data.get("mensagem", "")),
             "classificacao": str(data.get("classificacao", "")).strip(),
@@ -193,6 +194,7 @@ class LocalRepository:
 
         row = [
             entry["data_hora"],
+            entry["student_name"],
             entry["telefone"],
             entry["mensagem"],
             entry["intencao"],
@@ -211,6 +213,237 @@ class LocalRepository:
             )
         except Exception as exc:
             logger.error("falha no sheets | usando backup JSON | erro=%s", exc)
+
+    def resolver_nome_aluno(
+        self,
+        telefone: str,
+        *,
+        push_name: str = "",
+    ) -> str:
+        normalized_phone = self._normalize_phone_lookup(telefone)
+        if normalized_phone:
+            campaign_name = self._find_student_name_in_sent_campaigns(normalized_phone)
+            if campaign_name:
+                return campaign_name
+
+            contact_name = self._find_student_name_in_contacts_by_phone(normalized_phone)
+            if contact_name:
+                return contact_name
+
+        normalized_push_name = self._normalize_text_lookup(push_name)
+        if normalized_push_name:
+            campaign_name = self._find_student_name_in_sent_campaigns_by_name(normalized_push_name)
+            if campaign_name:
+                return campaign_name
+
+            contact_name = self._find_student_name_in_contacts_by_name(normalized_push_name)
+            if contact_name:
+                return contact_name
+
+        recent_name = self._find_most_recent_student_name_in_sent_campaigns()
+        if recent_name:
+            return recent_name
+
+        return ""
+
+    def limpar_interacoes_salvas(self) -> int:
+        entries = self._read_json(self.incoming_messages_file)
+        cleaned_entries = self._clean_interaction_entries(entries)
+        self._write_json(self.incoming_messages_file, cleaned_entries)
+        self._replace_incoming_google_sheet(cleaned_entries)
+        return len(cleaned_entries)
+
+    def _clean_interaction_entries(self, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        selected_entries: dict[str, dict[str, Any]] = {}
+        anonymous_entries: list[dict[str, Any]] = []
+
+        for entry in entries:
+            raw_payload = entry.get("raw_payload") or {}
+            if not self._should_persist_incoming_payload(raw_payload):
+                continue
+
+            message_id = self._extract_message_id(raw_payload)
+            if not message_id:
+                anonymous_entries.append(self._enrich_interaction_entry(entry))
+                continue
+
+            current_best = selected_entries.get(message_id)
+            if current_best is None or self._score_interaction_entry(entry) >= self._score_interaction_entry(
+                current_best
+            ):
+                selected_entries[message_id] = entry
+
+        cleaned = [self._enrich_interaction_entry(entry) for entry in selected_entries.values()]
+        cleaned.extend(anonymous_entries)
+        cleaned.sort(key=lambda item: str(item.get("data_hora", "")))
+        return cleaned
+
+    def interacao_ja_registrada(self, payload: dict[str, Any]) -> bool:
+        message_id = self._extract_message_id(payload)
+        if not message_id:
+            return False
+        for entry in self._read_json(self.incoming_messages_file):
+            existing_payload = entry.get("raw_payload") or {}
+            if self._extract_message_id(existing_payload) == message_id:
+                return True
+        return False
+
+    def _replace_incoming_google_sheet(self, entries: list[dict[str, Any]]) -> None:
+        if not settings.google_sheet_dados_url:
+            logger.warning("GOOGLE_SHEET_DADOS_URL nao configurada; limpeza apenas local")
+            return
+
+        worksheets = self._get_worksheets(
+            settings.google_sheet_dados_url,
+            settings.google_sheet_dados_worksheet,
+        )
+        if not worksheets:
+            logger.warning("Nao foi possivel acessar Google Sheets de dados durante limpeza")
+            return
+
+        worksheet = worksheets[0]
+        header = [
+            "data_hora",
+            "student_name",
+            "telefone",
+            "mensagem",
+            "intencao",
+            "motivo",
+            "observacao",
+            "campaign_id",
+            "origem",
+        ]
+        rows = [
+            [
+                entry.get("data_hora", ""),
+                entry.get("student_name", ""),
+                entry.get("telefone", ""),
+                entry.get("mensagem", ""),
+                entry.get("intencao", ""),
+                entry.get("motivo", ""),
+                entry.get("observacao", ""),
+                entry.get("campaign_id", ""),
+                entry.get("origem", "whatsapp"),
+            ]
+            for entry in entries
+        ]
+
+        try:
+            worksheet.clear()
+            worksheet.append_row(header)
+            if rows:
+                worksheet.append_rows(rows)
+            logger.info("Planilha de interacoes limpa e regravada com %s registros", len(rows))
+        except Exception as exc:
+            logger.error("Falha ao regravar planilha de interacoes: %s", exc)
+
+    def _enrich_interaction_entry(self, entry: dict[str, Any]) -> dict[str, Any]:
+        raw_payload = entry.get("raw_payload") or {}
+        phone = str(entry.get("telefone", "")).strip()
+        push_name = str(raw_payload.get("data", {}).get("pushName", "")).strip()
+        student_name = str(entry.get("student_name", "")).strip() or self.resolver_nome_aluno(
+            phone,
+            push_name=push_name,
+        )
+        cleaned_entry = dict(entry)
+        cleaned_entry["student_name"] = student_name
+        return cleaned_entry
+
+    @staticmethod
+    def _score_interaction_entry(entry: dict[str, Any]) -> tuple[int, int, str]:
+        raw_payload = entry.get("raw_payload") or {}
+        data = raw_payload.get("data", {}) if isinstance(raw_payload, dict) else {}
+        status = str(data.get("status", "")).strip().upper()
+        push_name = str(data.get("pushName", "")).strip()
+        status_score = 1 if status and status != "ERROR" else 0
+        push_name_score = 1 if push_name else 0
+        return (status_score, push_name_score, str(entry.get("data_hora", "")))
+
+    def _find_student_name_in_sent_campaigns(self, telefone: str) -> str:
+        campaigns_dir = self.base_path / "campaigns"
+        if not campaigns_dir.exists():
+            return ""
+
+        for file_path in sorted(campaigns_dir.glob("*_sent.json"), reverse=True):
+            for item in self._read_json(file_path):
+                item_phone = self._normalize_phone_lookup(item.get("phone"))
+                if item_phone == telefone:
+                    return str(item.get("student_name", "")).strip()
+        return ""
+
+    def _find_student_name_in_sent_campaigns_by_name(self, push_name: str) -> str:
+        campaigns_dir = self.base_path / "campaigns"
+        if not campaigns_dir.exists():
+            return ""
+
+        for file_path in sorted(campaigns_dir.glob("*_sent.json"), reverse=True):
+            for item in self._read_json(file_path):
+                student_name = str(item.get("student_name", "")).strip()
+                if self._normalize_text_lookup(student_name) == push_name:
+                    return student_name
+        return ""
+
+    def _find_student_name_in_contacts_by_phone(self, telefone: str) -> str:
+        for contact in self.carregar_contatos():
+            phones = [
+                self._normalize_phone_lookup(contact.get("phone1")),
+                self._normalize_phone_lookup(contact.get("phone2")),
+                self._normalize_phone_lookup(contact.get("phone3")),
+            ]
+            if telefone in phones:
+                return str(contact.get("student_name", "")).strip()
+        return ""
+
+    def _find_student_name_in_contacts_by_name(self, push_name: str) -> str:
+        for contact in self.carregar_contatos():
+            student_name = str(contact.get("student_name", "")).strip()
+            if self._normalize_text_lookup(student_name) == push_name:
+                return student_name
+        return ""
+
+    def _find_most_recent_student_name_in_sent_campaigns(self) -> str:
+        campaigns_dir = self.base_path / "campaigns"
+        if not campaigns_dir.exists():
+            return ""
+
+        for file_path in sorted(campaigns_dir.glob("*_sent.json"), reverse=True):
+            items = self._read_json(file_path)
+            for item in reversed(items):
+                if str(item.get("status", "")).strip().lower() != "sent":
+                    continue
+                student_name = str(item.get("student_name", "")).strip()
+                if student_name:
+                    return student_name
+        return ""
+
+    @staticmethod
+    def _should_persist_incoming_payload(payload: dict[str, Any]) -> bool:
+        event = str(payload.get("event", "")).strip().lower()
+        data = payload.get("data", {})
+        key = data.get("key", {}) if isinstance(data, dict) else {}
+        if event != "messages.upsert":
+            return False
+        if bool(key.get("fromMe")):
+            return False
+        return True
+
+    @staticmethod
+    def _extract_message_id(payload: dict[str, Any]) -> str:
+        data = payload.get("data", {})
+        key = data.get("key", {}) if isinstance(data, dict) else {}
+        return str(key.get("id", "")).strip()
+
+    @staticmethod
+    def _normalize_phone_lookup(value: Any) -> str:
+        text = str(value or "").replace("@s.whatsapp.net", "").replace("+", "").strip()
+        digits = "".join(char for char in text if char.isdigit())
+        return digits if len(digits) >= 10 else ""
+
+    @staticmethod
+    def _normalize_text_lookup(value: Any) -> str:
+        text = str(value or "").strip().lower()
+        text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+        return " ".join(text.split())
 
     def _records_to_contacts(self, records: list[dict[str, Any]]) -> list[dict[str, str]]:
         contacts: list[dict[str, str]] = []

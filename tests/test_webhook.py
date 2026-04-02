@@ -43,7 +43,9 @@ def test_webhook_processes_complete_payload(monkeypatch) -> None:
             "observacao": "aluno quer retornar",
         },
     )
+    monkeypatch.setattr(repository, "resolver_nome_aluno", lambda telefone, push_name="": "Joao Silva")
     monkeypatch.setattr(repository, "salvar_interacao", lambda data: saved.update(data))
+    monkeypatch.setattr(repository, "save_message", lambda **kwargs: None)
 
     response = client.post("/webhook/messages", json=_evolution_payload("acho que volto sim"))
 
@@ -57,6 +59,7 @@ def test_webhook_processes_complete_payload(monkeypatch) -> None:
     assert saved["intencao"] == "RETORNAR"
     assert saved["motivo"] == "OUTRO"
     assert saved["observacao"] == "aluno quer retornar"
+    assert saved["student_name"] == "Joao Silva"
     assert saved["campaign_id"] == ""
     assert saved["origem"] == "whatsapp"
     assert saved["data_hora"]
@@ -74,7 +77,9 @@ def test_webhook_handles_missing_conversation_with_safe_fallback(monkeypatch) ->
             "observacao": "mensagem vaga",
         },
     )
+    monkeypatch.setattr(repository, "resolver_nome_aluno", lambda telefone, push_name="": "Joao Silva")
     monkeypatch.setattr(repository, "salvar_interacao", lambda data: saved.update(data))
+    monkeypatch.setattr(repository, "save_message", lambda **kwargs: None)
 
     response = client.post("/webhook/messages", json=_evolution_payload(message=None))
 
@@ -84,6 +89,46 @@ def test_webhook_handles_missing_conversation_with_safe_fallback(monkeypatch) ->
     assert saved["telefone"] == "5514999999999"
     assert saved["campaign_id"] == ""
     assert saved["origem"] == "whatsapp"
+
+
+def test_webhook_ignores_send_message_events(monkeypatch) -> None:
+    saved: dict = {}
+
+    monkeypatch.setattr(repository, "salvar_interacao", lambda data: saved.update(data))
+    monkeypatch.setattr(repository, "save_message", lambda **kwargs: None)
+
+    response = client.post(
+        "/webhook/messages",
+        json={
+            "event": "send.message",
+            "data": {
+                "key": {
+                    "remoteJid": "5514999999999@s.whatsapp.net",
+                    "fromMe": True,
+                    "id": "ABC123",
+                },
+                "message": {"conversation": "mensagem enviada"},
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["classification"] == "IGNORADO"
+    assert saved == {}
+
+
+def test_webhook_ignores_duplicate_messages(monkeypatch) -> None:
+    saved: dict = {}
+
+    monkeypatch.setattr(repository, "interacao_ja_registrada", lambda payload: True)
+    monkeypatch.setattr(repository, "salvar_interacao", lambda data: saved.update(data))
+    monkeypatch.setattr(repository, "save_message", lambda **kwargs: None)
+
+    response = client.post("/webhook/messages", json=_evolution_payload("mensagem repetida"))
+
+    assert response.status_code == 200
+    assert response.json()["classification"] == "IGNORADO"
+    assert saved == {}
 
 
 def test_classifier_falls_back_to_duvida_on_openai_failure(monkeypatch) -> None:
@@ -191,6 +236,7 @@ def test_repository_salvar_interacao_appends_expected_columns(monkeypatch, tmp_p
     assert appended_rows == [
         [
             "2026-04-01T10:00:00",
+            "",
             "5514999999999",
             "acho que volto sim",
             "RETORNAR",
@@ -244,6 +290,31 @@ def test_repository_carregar_contatos_uses_contact_sheet_settings(monkeypatch, t
             "phone3": "",
         }
     ]
+
+
+def test_repository_resolver_nome_aluno_uses_recent_sent_campaign_fallback(monkeypatch, tmp_path: Path) -> None:
+    campaigns_dir = tmp_path / "campaigns"
+    campaigns_dir.mkdir()
+    sent_file = campaigns_dir / "campaign_faltas_dia_2_sent.json"
+    sent_file.write_text(
+        json.dumps(
+            [
+                {
+                    "student_name": "BRYAN ENZO SILVA CAVALCANTI",
+                    "status": "sent",
+                    "phone": "5514981324832@s.whatsapp.net",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(repository, "base_path", tmp_path)
+    monkeypatch.setattr(repository, "carregar_contatos", lambda: [])
+
+    student_name = repository.resolver_nome_aluno("149357571661905@lid", push_name="")
+
+    assert student_name == "BRYAN ENZO SILVA CAVALCANTI"
 
 
 def test_app_has_single_webhook_route() -> None:

@@ -11,6 +11,7 @@ from services.sender import send_campaign
 def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
     sleep_mock = Mock()
     monkeypatch.setattr(sender.time, "sleep", sleep_mock)
+    monkeypatch.setattr(sender.repository, "save_message", Mock())
 
 
 def test_send_campaign_marks_pending_item_as_sent(monkeypatch: pytest.MonkeyPatch) -> None:

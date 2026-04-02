@@ -56,34 +56,42 @@ def generate_campaign(
         if not contact:
             continue
 
-        for phone_field in ("phone1", "phone2", "phone3"):
-            phone = _normalize_phone(contact.get(phone_field))
-            if not phone:
-                continue
+        phone_field, phone = _pick_primary_phone(contact)
+        if not phone:
+            continue
 
-            message_payload = generate_message(
-                student_name=student_name,
-                class_name=class_name or str(contact.get("class_name", "")).strip(),
-                campaign_type=campaign_type,
-                school_name=school_name,
-                absence_days=absence_days,
-                unique_key=f"{campaign_type}|{student_name}|{phone_field}|{phone}",
-            )
+        message_payload = generate_message(
+            student_name=student_name,
+            class_name=class_name or str(contact.get("class_name", "")).strip(),
+            campaign_type=campaign_type,
+            school_name=school_name,
+            absence_days=absence_days,
+            unique_key=f"{campaign_type}|{student_name}|{phone_field}|{phone}",
+        )
 
-            campaign.append(
-                {
-                    "campaign_id": resolved_campaign_id,
-                    "created_at": resolved_created_at,
-                    "student_name": student_name,
-                    "class_name": class_name or str(contact.get("class_name", "")).strip(),
-                    "phone": phone,
-                    "message": message_payload["message"],
-                    "status": "pending",
-                    "template_id": message_payload["template_id"],
-                }
-            )
+        campaign.append(
+            {
+                "campaign_id": resolved_campaign_id,
+                "created_at": resolved_created_at,
+                "student_name": student_name,
+                "class_name": class_name or str(contact.get("class_name", "")).strip(),
+                "phone": phone,
+                "contact_phone_field": phone_field,
+                "message": message_payload["message"],
+                "status": "pending",
+                "template_id": message_payload["template_id"],
+            }
+        )
 
     return campaign
+
+
+def _pick_primary_phone(contact: dict) -> tuple[str, str]:
+    for phone_field in ("phone1", "phone2", "phone3"):
+        phone = _normalize_phone(contact.get(phone_field))
+        if phone:
+            return phone_field, phone
+    return "", ""
 
 
 def save_campaign_to_json(campaign: list[dict], filename: str | None = None) -> str:

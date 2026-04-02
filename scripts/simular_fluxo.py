@@ -3,6 +3,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
 from core.config import settings
 from data.repository import repository
 from services.evolution_api import evolution_api_service

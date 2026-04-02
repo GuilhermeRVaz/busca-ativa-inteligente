@@ -19,14 +19,14 @@ class Settings:
         self.evolution_api_key = os.getenv("EVOLUTION_API_KEY", "")
         self.evolution_api_instance = os.getenv("EVOLUTION_API_INSTANCE", "")
         self.evolution_timeout_seconds = int(os.getenv("EVOLUTION_TIMEOUT_SECONDS", "30"))
-        self.send_min_delay_seconds = int(os.getenv("SEND_MIN_DELAY_SECONDS", "20"))
-        self.send_max_delay_seconds = int(os.getenv("SEND_MAX_DELAY_SECONDS", "40"))
+        self.send_min_delay_seconds = int(os.getenv("SEND_MIN_DELAY_SECONDS", "30"))
+        self.send_max_delay_seconds = int(os.getenv("SEND_MAX_DELAY_SECONDS", "90"))
         self.send_batch_extra_every = int(os.getenv("SEND_BATCH_EXTRA_EVERY", "10"))
         self.send_batch_extra_delay_min_seconds = int(
-            os.getenv("SEND_BATCH_EXTRA_DELAY_MIN_SECONDS", "60")
+            os.getenv("SEND_BATCH_EXTRA_DELAY_MIN_SECONDS", "420")
         )
         self.send_batch_extra_delay_max_seconds = int(
-            os.getenv("SEND_BATCH_EXTRA_DELAY_MAX_SECONDS", "120")
+            os.getenv("SEND_BATCH_EXTRA_DELAY_MAX_SECONDS", "900")
         )
 
         self.llm_provider = os.getenv("LLM_PROVIDER", "mock")
