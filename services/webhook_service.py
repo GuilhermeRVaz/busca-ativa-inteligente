@@ -23,6 +23,9 @@ class WebhookService:
                 "motivo": "IGNORADO",
                 "observacao": "evento ignorado",
                 "student_name": "",
+                "class_name": "",
+                "ra": "",
+                "tipo_responsavel": "",
                 "campaign_id": "",
                 "origem": "whatsapp",
                 "data_hora": datetime.now().isoformat(),
@@ -38,6 +41,9 @@ class WebhookService:
                 "motivo": "IGNORADO",
                 "observacao": "mensagem duplicada",
                 "student_name": "",
+                "class_name": "",
+                "ra": "",
+                "tipo_responsavel": "",
                 "campaign_id": "",
                 "origem": "whatsapp",
                 "data_hora": datetime.now().isoformat(),
@@ -47,11 +53,24 @@ class WebhookService:
         mensagem = self._extract_message(payload)
         campaign_id = self._extract_campaign_id(payload)
         push_name = self._extract_push_name(payload)
-        student_name = repository.resolver_nome_aluno(telefone, push_name=push_name)
+        context = repository.resolver_contexto_aluno(telefone, student_name="")
+        student_name = context.get("student_name", "")
+        class_name = context.get("class_name", "")
+        ra = context.get("ra", "")
+        tipo_responsavel = context.get("tipo_responsavel", "")
+        message_id = repository._extract_message_id(payload)
         data_hora = datetime.now().isoformat()
 
         if not mensagem:
             logger.warning("Webhook recebido sem mensagem textual; usando mensagem vazia")
+
+        if not student_name:
+            logger.warning(
+                "nome_aluno_nao_resolvido | telefone=%s | push_name=%s | message_id=%s",
+                telefone,
+                push_name,
+                message_id,
+            )
 
         logger.info("Telefone extraido: %s", telefone)
         logger.info("Mensagem extraida: %s", mensagem)
@@ -68,6 +87,9 @@ class WebhookService:
             metadata={
                 "campaign_id": campaign_id,
                 "student_name": student_name,
+                "class_name": class_name,
+                "ra": ra,
+                "tipo_responsavel": tipo_responsavel,
                 "intencao": intencao,
                 "motivo": motivo,
                 "observacao": observacao,
@@ -84,6 +106,9 @@ class WebhookService:
                 "motivo": motivo,
                 "observacao": observacao,
                 "student_name": student_name,
+                "class_name": class_name,
+                "ra": ra,
+                "tipo_responsavel": tipo_responsavel,
                 "data_hora": data_hora,
                 "campaign_id": campaign_id,
                 "origem": "whatsapp",
@@ -109,6 +134,9 @@ class WebhookService:
             "motivo": motivo,
             "observacao": observacao,
             "student_name": student_name,
+            "class_name": class_name,
+            "ra": ra,
+            "tipo_responsavel": tipo_responsavel,
             "campaign_id": campaign_id,
             "origem": "whatsapp",
             "data_hora": data_hora,

@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import gspread
+from openpyxl import load_workbook
 
 from core.config import settings
 from core.logging import get_logger
@@ -107,6 +108,9 @@ class LocalRepository:
         entry = {
             "data_hora": str(data.get("data_hora", "")).strip(),
             "student_name": str(data.get("student_name", "")).strip(),
+            "class_name": str(data.get("class_name", "")).strip(),
+            "ra": str(data.get("ra", "")).strip(),
+            "tipo_responsavel": str(data.get("tipo_responsavel", "")).strip(),
             "telefone": str(data.get("telefone", "")).strip(),
             "mensagem": str(data.get("mensagem", "")),
             "classificacao": str(data.get("classificacao", "")).strip(),
@@ -125,6 +129,7 @@ class LocalRepository:
             entry["motivo"] = "OUTRO"
         if not entry["observacao"]:
             entry["observacao"] = "nao foi possivel classificar"
+        entry = self._enrich_interaction_entry(entry)
 
         self._save_incoming_json(entry)
         self._save_incoming_google_sheet(entry)
@@ -141,6 +146,10 @@ class LocalRepository:
         intencao: str = "",
         motivo: str = "",
         observacao: str = "",
+        student_name: str = "",
+        class_name: str = "",
+        ra: str = "",
+        tipo_responsavel: str = "",
     ) -> None:
         self.salvar_interacao(
             {
@@ -153,6 +162,10 @@ class LocalRepository:
                 "data_hora": data_hora,
                 "campaign_id": campaign_id,
                 "origem": origem,
+                "student_name": student_name,
+                "class_name": class_name,
+                "ra": ra,
+                "tipo_responsavel": tipo_responsavel,
                 "raw_payload": raw_payload or {},
             }
         )
@@ -192,9 +205,20 @@ class LocalRepository:
             logger.warning("Nao foi possivel acessar Google Sheets de dados; usando backup JSON")
             return
 
+        expected_header = self._incoming_sheet_header()
+        worksheet = worksheets[0]
+        current_header = [value.strip() for value in worksheet.row_values(1)]
+        if current_header != expected_header:
+            logger.info("Atualizando colunas da planilha de interacoes para novo formato")
+            self._replace_incoming_google_sheet(self._read_json(self.incoming_messages_file))
+            return
+
         row = [
             entry["data_hora"],
             entry["student_name"],
+            entry["class_name"],
+            entry["ra"],
+            entry["tipo_responsavel"],
             entry["telefone"],
             entry["mensagem"],
             entry["intencao"],
@@ -205,7 +229,7 @@ class LocalRepository:
         ]
 
         try:
-            worksheets[0].append_row(row)
+            worksheet.append_row(row)
             logger.info(
                 "salvo no sheets | telefone=%s | class=%s",
                 entry["telefone"],
@@ -220,31 +244,48 @@ class LocalRepository:
         *,
         push_name: str = "",
     ) -> str:
+        context = self.resolver_contexto_aluno(telefone, student_name="")
+        return context.get("student_name", "")
+
+    def resolver_contexto_aluno(
+        self,
+        telefone: str,
+        *,
+        student_name: str = "",
+    ) -> dict[str, str]:
         normalized_phone = self._normalize_phone_lookup(telefone)
         if normalized_phone:
+            contact_context = self._find_contact_context_by_phone(normalized_phone)
+            if contact_context:
+                return self._merge_with_consolidated_context(contact_context)
+
             campaign_name = self._find_student_name_in_sent_campaigns(normalized_phone)
             if campaign_name:
-                return campaign_name
+                return self._merge_with_consolidated_context(
+                    {
+                        "student_name": campaign_name,
+                        "class_name": "",
+                        "ra": "",
+                        "tipo_responsavel": "",
+                    }
+                )
 
-            contact_name = self._find_student_name_in_contacts_by_phone(normalized_phone)
-            if contact_name:
-                return contact_name
+        if student_name.strip():
+            return self._merge_with_consolidated_context(
+                {
+                    "student_name": student_name.strip(),
+                    "class_name": "",
+                    "ra": "",
+                    "tipo_responsavel": "",
+                }
+            )
 
-        normalized_push_name = self._normalize_text_lookup(push_name)
-        if normalized_push_name:
-            campaign_name = self._find_student_name_in_sent_campaigns_by_name(normalized_push_name)
-            if campaign_name:
-                return campaign_name
-
-            contact_name = self._find_student_name_in_contacts_by_name(normalized_push_name)
-            if contact_name:
-                return contact_name
-
-        recent_name = self._find_most_recent_student_name_in_sent_campaigns()
-        if recent_name:
-            return recent_name
-
-        return ""
+        return {
+            "student_name": "",
+            "class_name": "",
+            "ra": "",
+            "tipo_responsavel": "",
+        }
 
     def limpar_interacoes_salvas(self) -> int:
         entries = self._read_json(self.incoming_messages_file)
@@ -256,9 +297,14 @@ class LocalRepository:
     def _clean_interaction_entries(self, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
         selected_entries: dict[str, dict[str, Any]] = {}
         anonymous_entries: list[dict[str, Any]] = []
+        outbound_entries: list[dict[str, Any]] = []
 
         for entry in entries:
             raw_payload = entry.get("raw_payload") or {}
+            if self._is_outbound_interaction(entry):
+                outbound_entries.append(self._enrich_interaction_entry(entry))
+                continue
+
             if not self._should_persist_incoming_payload(raw_payload):
                 continue
 
@@ -275,6 +321,7 @@ class LocalRepository:
 
         cleaned = [self._enrich_interaction_entry(entry) for entry in selected_entries.values()]
         cleaned.extend(anonymous_entries)
+        cleaned.extend(outbound_entries)
         cleaned.sort(key=lambda item: str(item.get("data_hora", "")))
         return cleaned
 
@@ -302,21 +349,14 @@ class LocalRepository:
             return
 
         worksheet = worksheets[0]
-        header = [
-            "data_hora",
-            "student_name",
-            "telefone",
-            "mensagem",
-            "intencao",
-            "motivo",
-            "observacao",
-            "campaign_id",
-            "origem",
-        ]
+        header = self._incoming_sheet_header()
         rows = [
             [
                 entry.get("data_hora", ""),
                 entry.get("student_name", ""),
+                entry.get("class_name", ""),
+                entry.get("ra", ""),
+                entry.get("tipo_responsavel", ""),
                 entry.get("telefone", ""),
                 entry.get("mensagem", ""),
                 entry.get("intencao", ""),
@@ -338,15 +378,25 @@ class LocalRepository:
             logger.error("Falha ao regravar planilha de interacoes: %s", exc)
 
     def _enrich_interaction_entry(self, entry: dict[str, Any]) -> dict[str, Any]:
-        raw_payload = entry.get("raw_payload") or {}
         phone = str(entry.get("telefone", "")).strip()
-        push_name = str(raw_payload.get("data", {}).get("pushName", "")).strip()
-        student_name = str(entry.get("student_name", "")).strip() or self.resolver_nome_aluno(
-            phone,
-            push_name=push_name,
-        )
         cleaned_entry = dict(entry)
-        cleaned_entry["student_name"] = student_name
+        context = self.resolver_contexto_aluno(
+            phone,
+            student_name=str(entry.get("student_name", "")).strip(),
+        )
+        cleaned_entry["student_name"] = str(entry.get("student_name", "")).strip() or context.get(
+            "student_name",
+            "",
+        )
+        cleaned_entry["class_name"] = str(entry.get("class_name", "")).strip() or context.get(
+            "class_name",
+            "",
+        )
+        cleaned_entry["ra"] = str(entry.get("ra", "")).strip() or context.get("ra", "")
+        cleaned_entry["tipo_responsavel"] = str(entry.get("tipo_responsavel", "")).strip() or context.get(
+            "tipo_responsavel",
+            "",
+        )
         return cleaned_entry
 
     @staticmethod
@@ -371,18 +421,6 @@ class LocalRepository:
                     return str(item.get("student_name", "")).strip()
         return ""
 
-    def _find_student_name_in_sent_campaigns_by_name(self, push_name: str) -> str:
-        campaigns_dir = self.base_path / "campaigns"
-        if not campaigns_dir.exists():
-            return ""
-
-        for file_path in sorted(campaigns_dir.glob("*_sent.json"), reverse=True):
-            for item in self._read_json(file_path):
-                student_name = str(item.get("student_name", "")).strip()
-                if self._normalize_text_lookup(student_name) == push_name:
-                    return student_name
-        return ""
-
     def _find_student_name_in_contacts_by_phone(self, telefone: str) -> str:
         for contact in self.carregar_contatos():
             phones = [
@@ -394,27 +432,86 @@ class LocalRepository:
                 return str(contact.get("student_name", "")).strip()
         return ""
 
-    def _find_student_name_in_contacts_by_name(self, push_name: str) -> str:
+    def _find_contact_context_by_phone(self, telefone: str) -> dict[str, str]:
         for contact in self.carregar_contatos():
-            student_name = str(contact.get("student_name", "")).strip()
-            if self._normalize_text_lookup(student_name) == push_name:
-                return student_name
-        return ""
-
-    def _find_most_recent_student_name_in_sent_campaigns(self) -> str:
-        campaigns_dir = self.base_path / "campaigns"
-        if not campaigns_dir.exists():
-            return ""
-
-        for file_path in sorted(campaigns_dir.glob("*_sent.json"), reverse=True):
-            items = self._read_json(file_path)
-            for item in reversed(items):
-                if str(item.get("status", "")).strip().lower() != "sent":
+            for index in range(1, 4):
+                if self._normalize_phone_lookup(contact.get(f"phone{index}")) != telefone:
                     continue
-                student_name = str(item.get("student_name", "")).strip()
-                if student_name:
-                    return student_name
-        return ""
+                return {
+                    "student_name": str(contact.get("student_name", "")).strip(),
+                    "class_name": str(contact.get("class_name", "")).strip(),
+                    "ra": str(contact.get("ra", "")).strip(),
+                    "tipo_responsavel": str(contact.get(f"responsible_type{index}", "")).strip(),
+                }
+        return {}
+
+    def _merge_with_consolidated_context(self, context: dict[str, str]) -> dict[str, str]:
+        merged = {
+            "student_name": str(context.get("student_name", "")).strip(),
+            "class_name": str(context.get("class_name", "")).strip(),
+            "ra": str(context.get("ra", "")).strip(),
+            "tipo_responsavel": str(context.get("tipo_responsavel", "")).strip(),
+        }
+        consolidated = self._find_student_context_in_consolidated(
+            merged["student_name"],
+            merged["ra"],
+        )
+        if consolidated:
+            merged["student_name"] = merged["student_name"] or consolidated.get("student_name", "")
+            merged["class_name"] = merged["class_name"] or consolidated.get("class_name", "")
+            merged["ra"] = merged["ra"] or consolidated.get("ra", "")
+        return merged
+
+    def _find_student_context_in_consolidated(
+        self,
+        student_name: str,
+        ra: str,
+    ) -> dict[str, str]:
+        report_path = Path(settings.consolidated_report_path)
+        if not report_path.exists():
+            return {}
+
+        try:
+            workbook = load_workbook(report_path, data_only=True)
+        except Exception as exc:
+            logger.warning("Falha ao abrir consolidado para enriquecer interacao: %s", exc)
+            return {}
+
+        sheet = workbook.active
+        rows = list(sheet.iter_rows(values_only=True))
+        header_index = self._find_consolidated_header_index(rows)
+        if header_index < 0:
+            return {}
+
+        headers = [self._normalize_column_name(value) for value in rows[header_index]]
+        name_index = self._find_column_index(headers, {"nome"})
+        ra_index = self._find_column_index(headers, {"ra"})
+        class_index = self._find_column_index(headers, {"turma"})
+        if name_index < 0:
+            return {}
+
+        normalized_name = self._normalize_text_lookup(student_name)
+        normalized_ra = self._normalize_ra_lookup(ra)
+        for row in rows[header_index + 1 :]:
+            row_name = str(self._get_row_value(row, name_index)).strip()
+            row_ra = str(self._get_row_value(row, ra_index)).strip() if ra_index >= 0 else ""
+            row_class = str(self._get_row_value(row, class_index)).strip() if class_index >= 0 else ""
+
+            if normalized_ra and self._normalize_ra_lookup(row_ra) == normalized_ra:
+                return {
+                    "student_name": row_name,
+                    "class_name": row_class,
+                    "ra": self._format_ra_from_consolidated(row_ra),
+                }
+
+            if normalized_name and self._normalize_text_lookup(row_name) == normalized_name:
+                return {
+                    "student_name": row_name,
+                    "class_name": row_class,
+                    "ra": self._format_ra_from_consolidated(row_ra),
+                }
+
+        return {}
 
     @staticmethod
     def _should_persist_incoming_payload(payload: dict[str, Any]) -> bool:
@@ -437,6 +534,8 @@ class LocalRepository:
     def _normalize_phone_lookup(value: Any) -> str:
         text = str(value or "").replace("@s.whatsapp.net", "").replace("+", "").strip()
         digits = "".join(char for char in text if char.isdigit())
+        if len(digits) > 11 and digits.startswith("55"):
+            digits = digits[2:]
         return digits if len(digits) >= 10 else ""
 
     @staticmethod
@@ -444,6 +543,43 @@ class LocalRepository:
         text = str(value or "").strip().lower()
         text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
         return " ".join(text.split())
+
+    @staticmethod
+    def _normalize_ra_lookup(value: Any) -> str:
+        return "".join(char for char in str(value or "").upper() if char.isalnum())
+
+    @staticmethod
+    def _format_ra_from_consolidated(value: Any) -> str:
+        return " ".join(str(value or "").strip().split())
+
+    @staticmethod
+    def _is_outbound_interaction(entry: dict[str, Any]) -> bool:
+        origem = str(entry.get("origem", "")).strip().lower()
+        if origem == "whatsapp_outbound":
+            return True
+
+        raw_payload = entry.get("raw_payload") or {}
+        if not isinstance(raw_payload, dict):
+            return False
+        event = str(raw_payload.get("event", "")).strip().lower()
+        return event == "send.message"
+
+    @staticmethod
+    def _incoming_sheet_header() -> list[str]:
+        return [
+            "data_hora",
+            "student_name",
+            "class_name",
+            "ra",
+            "tipo_responsavel",
+            "telefone",
+            "mensagem",
+            "intencao",
+            "motivo",
+            "observacao",
+            "campaign_id",
+            "origem",
+        ]
 
     def _records_to_contacts(self, records: list[dict[str, Any]]) -> list[dict[str, str]]:
         contacts: list[dict[str, str]] = []
@@ -462,9 +598,10 @@ class LocalRepository:
             phone_columns = self._find_phone_columns(normalized_record)
             phone_values = [
                 self._sanitize_phone(normalized_record.get(column))
-                for column in phone_columns
+                for column in phone_columns[:3]
             ]
-            valid_phones = [phone for phone in phone_values if phone]
+            while len(phone_values) < 3:
+                phone_values.append("")
 
             contacts.append(
                 {
@@ -473,9 +610,22 @@ class LocalRepository:
                         normalized_record,
                         ["class_name", "turma", "classe"],
                     ),
-                    "phone1": valid_phones[0] if len(valid_phones) > 0 else "",
-                    "phone2": valid_phones[1] if len(valid_phones) > 1 else "",
-                    "phone3": valid_phones[2] if len(valid_phones) > 2 else "",
+                    "ra": self._build_ra_value(normalized_record),
+                    "phone1": phone_values[0],
+                    "phone2": phone_values[1],
+                    "phone3": phone_values[2],
+                    "responsible_type1": self._pick_first_value(
+                        normalized_record,
+                        ["responsavel_1", "responsavel1"],
+                    ),
+                    "responsible_type2": self._pick_first_value(
+                        normalized_record,
+                        ["responsavel_2", "responsavel2"],
+                    ),
+                    "responsible_type3": self._pick_first_value(
+                        normalized_record,
+                        ["responsavel_3", "responsavel3"],
+                    ),
                 }
             )
 
@@ -486,12 +636,21 @@ class LocalRepository:
             "phone1",
             "phone2",
             "phone3",
+            "phone_1",
+            "phone_2",
+            "phone_3",
             "telefone1",
             "telefone2",
             "telefone3",
+            "telefone_1",
+            "telefone_2",
+            "telefone_3",
             "celular1",
             "celular2",
             "celular3",
+            "celular_1",
+            "celular_2",
+            "celular_3",
         ]
         selected = [column for column in preferred if column in record]
         if selected:
@@ -518,6 +677,23 @@ class LocalRepository:
                 return text
         return ""
 
+    def _build_ra_value(self, record: dict[str, Any]) -> str:
+        ra = self._pick_first_value(record, ["ra"])
+        if not ra:
+            return ""
+
+        digits = "".join(char for char in str(ra) if char.isdigit())
+        ra_base = digits.zfill(12) if digits else str(ra).strip().upper()
+        dig = self._pick_first_value(record, ["dig_ra", "dig__ra", "digito_ra"])
+        uf = self._pick_first_value(record, ["uf_ra"])
+
+        formatted = ra_base
+        if dig:
+            formatted = f"{formatted}-{str(dig).strip().upper()}"
+        if uf:
+            formatted = f"{formatted}/{str(uf).strip().upper()}"
+        return formatted
+
     @staticmethod
     def _sanitize_phone(value: Any) -> str:
         digits = "".join(char for char in str(value or "") if char.isdigit())
@@ -533,6 +709,31 @@ class LocalRepository:
         for char in text:
             normalized.append(char if char.isalnum() else "_")
         return "".join(normalized).strip("_")
+
+    @staticmethod
+    def _find_consolidated_header_index(rows: list[tuple[Any, ...]]) -> int:
+        for index, row in enumerate(rows):
+            normalized = {
+                LocalRepository._normalize_column_name(value)
+                for value in row
+                if str(value or "").strip()
+            }
+            if {"nome", "ra", "turma"}.issubset(normalized):
+                return index
+        return -1
+
+    @staticmethod
+    def _find_column_index(headers: list[str], options: set[str]) -> int:
+        for index, header in enumerate(headers):
+            if header in options:
+                return index
+        return -1
+
+    @staticmethod
+    def _get_row_value(row: tuple[Any, ...], index: int) -> Any:
+        if index < 0 or index >= len(row):
+            return ""
+        return row[index]
 
 
 repository = LocalRepository()

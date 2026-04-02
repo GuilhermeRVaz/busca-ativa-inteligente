@@ -43,7 +43,16 @@ def test_webhook_processes_complete_payload(monkeypatch) -> None:
             "observacao": "aluno quer retornar",
         },
     )
-    monkeypatch.setattr(repository, "resolver_nome_aluno", lambda telefone, push_name="": "Joao Silva")
+    monkeypatch.setattr(
+        repository,
+        "resolver_contexto_aluno",
+        lambda telefone, student_name="": {
+            "student_name": "Joao Silva",
+            "class_name": "7A",
+            "ra": "000123456789-1/SP",
+            "tipo_responsavel": "mae",
+        },
+    )
     monkeypatch.setattr(repository, "salvar_interacao", lambda data: saved.update(data))
     monkeypatch.setattr(repository, "save_message", lambda **kwargs: None)
 
@@ -53,6 +62,10 @@ def test_webhook_processes_complete_payload(monkeypatch) -> None:
     assert response.json()["ok"] is True
     assert response.json()["classification"] == "RETORNAR"
     assert response.json()["telefone"] == "5514999999999"
+    assert response.json()["student_name"] == "Joao Silva"
+    assert response.json()["class_name"] == "7A"
+    assert response.json()["ra"] == "000123456789-1/SP"
+    assert response.json()["tipo_responsavel"] == "mae"
     assert saved["telefone"] == "5514999999999"
     assert saved["mensagem"] == "acho que volto sim"
     assert saved["classificacao"] == "RETORNAR"
@@ -60,6 +73,9 @@ def test_webhook_processes_complete_payload(monkeypatch) -> None:
     assert saved["motivo"] == "OUTRO"
     assert saved["observacao"] == "aluno quer retornar"
     assert saved["student_name"] == "Joao Silva"
+    assert saved["class_name"] == "7A"
+    assert saved["ra"] == "000123456789-1/SP"
+    assert saved["tipo_responsavel"] == "mae"
     assert saved["campaign_id"] == ""
     assert saved["origem"] == "whatsapp"
     assert saved["data_hora"]
@@ -77,7 +93,16 @@ def test_webhook_handles_missing_conversation_with_safe_fallback(monkeypatch) ->
             "observacao": "mensagem vaga",
         },
     )
-    monkeypatch.setattr(repository, "resolver_nome_aluno", lambda telefone, push_name="": "Joao Silva")
+    monkeypatch.setattr(
+        repository,
+        "resolver_contexto_aluno",
+        lambda telefone, student_name="": {
+            "student_name": "Joao Silva",
+            "class_name": "7A",
+            "ra": "000123456789-1/SP",
+            "tipo_responsavel": "mae",
+        },
+    )
     monkeypatch.setattr(repository, "salvar_interacao", lambda data: saved.update(data))
     monkeypatch.setattr(repository, "save_message", lambda **kwargs: None)
 
@@ -87,6 +112,9 @@ def test_webhook_handles_missing_conversation_with_safe_fallback(monkeypatch) ->
     assert response.json()["classification"] == "DUVIDA"
     assert saved["mensagem"] == ""
     assert saved["telefone"] == "5514999999999"
+    assert saved["class_name"] == "7A"
+    assert saved["ra"] == "000123456789-1/SP"
+    assert saved["tipo_responsavel"] == "mae"
     assert saved["campaign_id"] == ""
     assert saved["origem"] == "whatsapp"
 
@@ -199,6 +227,23 @@ def test_repository_salvar_interacao_appends_expected_columns(monkeypatch, tmp_p
     appended_rows: list[list[str]] = []
 
     class FakeWorksheet:
+        def row_values(self, index: int):
+            assert index == 1
+            return [
+                "data_hora",
+                "student_name",
+                "class_name",
+                "ra",
+                "tipo_responsavel",
+                "telefone",
+                "mensagem",
+                "intencao",
+                "motivo",
+                "observacao",
+                "campaign_id",
+                "origem",
+            ]
+
         def append_row(self, row):
             appended_rows.append(row)
 
@@ -237,6 +282,9 @@ def test_repository_salvar_interacao_appends_expected_columns(monkeypatch, tmp_p
         [
             "2026-04-01T10:00:00",
             "",
+            "",
+            "",
+            "",
             "5514999999999",
             "acho que volto sim",
             "RETORNAR",
@@ -257,9 +305,15 @@ def test_repository_carregar_contatos_uses_contact_sheet_settings(monkeypatch, t
             return [
                 {
                     "Nome do Aluno": "Joao Silva",
+                    "RA": 123456789,
+                    "Dig. RA": 1,
+                    "UF RA": "SP",
                     "Turma": "7A",
+                    "responsável 1": "mae",
                     "Telefone 1": "(18) 99999-1111",
+                    "responsavel 2": "pai",
                     "Telefone 2": "123",
+                    "responsavel 3": "avo",
                     "Celular 3": "18 99999-2222",
                 }
             ]
@@ -285,14 +339,20 @@ def test_repository_carregar_contatos_uses_contact_sheet_settings(monkeypatch, t
         {
             "student_name": "Joao Silva",
             "class_name": "7A",
+            "ra": "000123456789-1/SP",
             "phone1": "18999991111",
-            "phone2": "18999992222",
-            "phone3": "",
+            "phone2": "",
+            "phone3": "18999992222",
+            "responsible_type1": "mae",
+            "responsible_type2": "pai",
+            "responsible_type3": "avo",
         }
     ]
 
 
-def test_repository_resolver_nome_aluno_uses_recent_sent_campaign_fallback(monkeypatch, tmp_path: Path) -> None:
+def test_repository_resolver_nome_aluno_returns_empty_without_confident_match(
+    monkeypatch, tmp_path: Path
+) -> None:
     campaigns_dir = tmp_path / "campaigns"
     campaigns_dir.mkdir()
     sent_file = campaigns_dir / "campaign_faltas_dia_2_sent.json"
@@ -314,7 +374,74 @@ def test_repository_resolver_nome_aluno_uses_recent_sent_campaign_fallback(monke
 
     student_name = repository.resolver_nome_aluno("149357571661905@lid", push_name="")
 
+    assert student_name == ""
+
+
+def test_repository_resolver_nome_aluno_uses_phone_match_from_sent_campaign(
+    monkeypatch, tmp_path: Path
+) -> None:
+    campaigns_dir = tmp_path / "campaigns"
+    campaigns_dir.mkdir()
+    sent_file = campaigns_dir / "campaign_faltas_dia_2_sent.json"
+    sent_file.write_text(
+        json.dumps(
+            [
+                {
+                    "student_name": "BRYAN ENZO SILVA CAVALCANTI",
+                    "status": "sent",
+                    "phone": "5514981324832@s.whatsapp.net",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(repository, "base_path", tmp_path)
+    monkeypatch.setattr(repository, "carregar_contatos", lambda: [])
+
+    student_name = repository.resolver_nome_aluno("5514981324832@s.whatsapp.net", push_name="")
+
     assert student_name == "BRYAN ENZO SILVA CAVALCANTI"
+
+
+def test_repository_resolver_contexto_aluno_by_phone_enriches_ra_and_tipo(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        repository,
+        "carregar_contatos",
+        lambda: [
+            {
+                "student_name": "BRYAN ENZO SILVA CAVALCANTI",
+                "class_name": "",
+                "ra": "000115238654-2/SP",
+                "phone1": "14997906412",
+                "phone2": "",
+                "phone3": "",
+                "responsible_type1": "mae",
+                "responsible_type2": "",
+                "responsible_type3": "",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        repository,
+        "_find_student_context_in_consolidated",
+        lambda student_name, ra: {
+            "student_name": "BRYAN ENZO SILVA CAVALCANTI",
+            "class_name": "6 ANO 6A INTEGRAL 9H ANUAL",
+            "ra": "000115238654-2/SP",
+        },
+    )
+
+    context = repository.resolver_contexto_aluno("5514997906412@s.whatsapp.net")
+
+    assert context == {
+        "student_name": "BRYAN ENZO SILVA CAVALCANTI",
+        "class_name": "6 ANO 6A INTEGRAL 9H ANUAL",
+        "ra": "000115238654-2/SP",
+        "tipo_responsavel": "mae",
+    }
 
 
 def test_app_has_single_webhook_route() -> None:

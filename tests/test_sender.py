@@ -12,6 +12,17 @@ def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
     sleep_mock = Mock()
     monkeypatch.setattr(sender.time, "sleep", sleep_mock)
     monkeypatch.setattr(sender.repository, "save_message", Mock())
+    monkeypatch.setattr(sender.repository, "salvar_interacao", Mock())
+    monkeypatch.setattr(
+        sender.repository,
+        "resolver_contexto_aluno",
+        lambda telefone, student_name="": {
+            "student_name": student_name,
+            "class_name": "",
+            "ra": "",
+            "tipo_responsavel": "",
+        },
+    )
 
 
 def test_send_campaign_marks_pending_item_as_sent(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -52,6 +63,61 @@ def test_send_campaign_marks_pending_item_as_sent(monkeypatch: pytest.MonkeyPatc
         "Teste",
         dry_run=False,
     )
+
+
+def test_send_campaign_persists_outbound_interaction(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sender.evolution_api_service, "validate_configuration", lambda: None)
+    monkeypatch.setattr(
+        sender.evolution_api_service,
+        "send_text_message",
+        lambda phone, text, dry_run: {
+            "success": True,
+            "provider_message_id": "provider-123",
+            "error": None,
+            "used_fallback": False,
+        },
+    )
+    salvar_interacao_mock = Mock()
+    monkeypatch.setattr(sender.repository, "salvar_interacao", salvar_interacao_mock)
+    monkeypatch.setattr(
+        sender.repository,
+        "resolver_contexto_aluno",
+        lambda telefone, student_name="": {
+            "student_name": "Joao Silva",
+            "class_name": "7A",
+            "ra": "000123456789-1/SP",
+            "tipo_responsavel": "mae",
+        },
+    )
+
+    campaign = [
+        {
+            "campaign_id": "campaign_001",
+            "student_name": "Joao Silva",
+            "class_name": "7A",
+            "phone": "14999991111",
+            "contact_phone_field": "phone1",
+            "message": "Teste",
+            "status": "pending",
+        }
+    ]
+
+    send_campaign(campaign)
+
+    salvar_interacao_mock.assert_called_once()
+    payload = salvar_interacao_mock.call_args.args[0]
+    assert payload["student_name"] == "Joao Silva"
+    assert payload["class_name"] == "7A"
+    assert payload["ra"] == "000123456789-1/SP"
+    assert payload["tipo_responsavel"] == "mae"
+    assert payload["telefone"] == "5514999991111@s.whatsapp.net"
+    assert payload["mensagem"] == "Teste"
+    assert payload["intencao"] == "OUTBOUND"
+    assert payload["motivo"] == "CAMPANHA"
+    assert payload["origem"] == "whatsapp_outbound"
+    assert payload["campaign_id"] == "campaign_001"
+    assert "provider_message_id=provider-123" in payload["observacao"]
+    assert payload["raw_payload"]["event"] == "send.message"
 
 
 def test_send_campaign_uses_fallback_metadata_when_service_reports_it(

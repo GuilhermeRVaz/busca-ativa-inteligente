@@ -44,11 +44,16 @@ def send_campaign(
             updated_item["status"] = "failed"
             updated_item["failure_reason"] = validation_error
             _log_send_result(updated_item, normalized_phone or updated_item.get("phone", ""))
+            _save_outbound_interaction(updated_item, normalized_phone or str(updated_item.get("phone", "")))
         else:
             send_result = evolution_api_service.send_text_message(
                 normalized_phone,
                 str(updated_item.get("message", "")).strip(),
                 dry_run=dry_run,
+            )
+            interaction_context = repository.resolver_contexto_aluno(
+                normalized_phone,
+                student_name=str(updated_item.get("student_name", "")).strip(),
             )
             updated_item["phone"] = normalized_phone
             updated_item["provider_message_id"] = send_result.get("provider_message_id")
@@ -56,6 +61,7 @@ def send_campaign(
             updated_item["status"] = "sent" if send_result.get("success") else "failed"
             updated_item["failure_reason"] = send_result.get("error")
             _log_send_result(updated_item, normalized_phone)
+            _save_outbound_interaction(updated_item, normalized_phone, interaction_context)
             repository.save_message(
                 conversation_id=normalized_phone,
                 direction="outbound",
@@ -64,6 +70,8 @@ def send_campaign(
                     "campaign_id": updated_item.get("campaign_id", ""),
                     "student_name": updated_item.get("student_name", ""),
                     "class_name": updated_item.get("class_name", ""),
+                    "ra": interaction_context.get("ra", ""),
+                    "tipo_responsavel": interaction_context.get("tipo_responsavel", ""),
                     "provider_message_id": updated_item.get("provider_message_id"),
                     "status": updated_item.get("status"),
                     "failure_reason": updated_item.get("failure_reason"),
@@ -143,6 +151,55 @@ def _log_send_result(item: dict[str, Any], phone: str) -> None:
         item.get("provider_message_id"),
         item.get("failure_reason"),
         "sim" if item.get("dry_run") else "nao",
+    )
+
+
+def _save_outbound_interaction(
+    item: dict[str, Any],
+    phone: str,
+    context: dict[str, str] | None = None,
+) -> None:
+    context = context or repository.resolver_contexto_aluno(
+        phone,
+        student_name=str(item.get("student_name", "")).strip(),
+    )
+    provider_message_id = item.get("provider_message_id") or ""
+    failure_reason = item.get("failure_reason") or ""
+    contact_phone_field = item.get("contact_phone_field") or ""
+    observacao = (
+        f"status={item.get('status', '')}; "
+        f"provider_message_id={provider_message_id}; "
+        f"contact_phone_field={contact_phone_field}; "
+        f"motivo_falha={failure_reason}"
+    )
+    repository.salvar_interacao(
+        {
+            "data_hora": item.get("sent_at", ""),
+            "student_name": context.get("student_name", "").strip()
+            or str(item.get("student_name", "")).strip(),
+            "class_name": context.get("class_name", "").strip()
+            or str(item.get("class_name", "")).strip(),
+            "ra": context.get("ra", "").strip(),
+            "tipo_responsavel": context.get("tipo_responsavel", "").strip(),
+            "telefone": phone,
+            "mensagem": str(item.get("message", "")).strip(),
+            "classificacao": "OUTBOUND",
+            "intencao": "OUTBOUND",
+            "motivo": "CAMPANHA",
+            "observacao": observacao,
+            "campaign_id": str(item.get("campaign_id", "")).strip(),
+            "origem": "whatsapp_outbound",
+            "raw_payload": {
+                "event": "send.message",
+                "data": {
+                    "key": {
+                        "remoteJid": phone,
+                        "id": provider_message_id,
+                    },
+                    "status": item.get("status", ""),
+                },
+            },
+        }
     )
 
 
