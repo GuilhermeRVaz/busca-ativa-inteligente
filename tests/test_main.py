@@ -22,10 +22,11 @@ class StubOrchestrator:
 
 def test_run_campaign_prints_sender_summary(monkeypatch, capsys) -> None:
     monkeypatch.setattr(main, "CampaignOrchestrator", StubOrchestrator)
+    monkeypatch.setattr(main.evolution_api_service, "get_instance_name", lambda: "instancia-teste")
     monkeypatch.setattr(
         main,
         "send_campaign",
-        lambda campaign: [
+        lambda campaign, dry_run: [
             {"status": "sent"},
             {"status": "sent"},
             {"status": "failed"},
@@ -39,11 +40,46 @@ def test_run_campaign_prints_sender_summary(monkeypatch, capsys) -> None:
         ),
     )
 
-    result = main.run_campaign(Namespace(tipo="faltas", dia=25, report_path=None))
+    result = main.run_campaign(
+        Namespace(tipo="faltas", dia=25, report_path=None, dry_run=False, max_items=None)
+    )
 
     output = capsys.readouterr().out
     assert result.endswith("campaign_faltas_dia_25_sent.json")
+    assert "Modo de envio: real" in output
+    assert "Instancia Evolution: instancia-teste" in output
     assert "Arquivo enviado salvo:" in output
     assert "Total de itens: 3" in output
     assert "Enviados: 2" in output
     assert "Falharam: 1" in output
+
+
+def test_run_campaign_applies_max_items(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(main, "CampaignOrchestrator", StubOrchestrator)
+    monkeypatch.setattr(main.evolution_api_service, "get_instance_name", lambda: "instancia-teste")
+    captured = {}
+
+    def fake_send_campaign(campaign, dry_run):
+        captured["campaign"] = campaign
+        captured["dry_run"] = dry_run
+        return [{"status": "sent"} for _ in campaign]
+
+    monkeypatch.setattr(main, "send_campaign", fake_send_campaign)
+    monkeypatch.setattr(
+        main,
+        "save_sent_campaign_to_json",
+        lambda sent_campaign, campaign_type, day, output_dir: str(
+            Path(output_dir) / "campaign_reuniao_sent.json"
+        ),
+    )
+
+    main.run_campaign(
+        Namespace(tipo="reuniao", dia=None, report_path=None, dry_run=True, max_items=2)
+    )
+
+    output = capsys.readouterr().out
+    assert len(captured["campaign"]) == 2
+    assert captured["dry_run"] is True
+    assert "Modo de envio: dry-run" in output
+    assert "Itens planejados: 3" in output
+    assert "Itens a enviar: 2" in output

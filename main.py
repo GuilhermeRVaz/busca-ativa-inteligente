@@ -4,6 +4,7 @@ from pathlib import Path
 from app.main import app
 from core.config import settings
 from services.campaign_orchestrator import CampaignOrchestrator
+from services.evolution_api import evolution_api_service
 from services.sender import save_sent_campaign_to_json, send_campaign
 
 
@@ -15,6 +16,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--report-path",
         help="Caminho opcional para o relatorio consolidado legado",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Gera e simula o envio sem tocar na Evolution API",
+    )
+    parser.add_argument(
+        "--max-items",
+        type=int,
+        help="Limita a quantidade de itens enviados para homologacao controlada",
+    )
+    parser.add_argument(
+        "--diagnostico",
+        action="store_true",
+        help="Executa validacoes de pre-voo para producao",
+    )
     return parser
 
 
@@ -25,7 +41,16 @@ def run_campaign(args: argparse.Namespace) -> str:
         day=args.dia,
         report_path=args.report_path,
     )
-    sent_campaign = send_campaign(result["campaign"])
+    campaign = _limit_campaign(result["campaign"], args.max_items)
+    mode = "dry-run" if args.dry_run else "real"
+
+    print(f"Modo de envio: {mode}")
+    print(f"Instancia Evolution: {evolution_api_service.get_instance_name()}")
+    print(f"Tipo de campanha: {result['campaign_type']}")
+    print(f"Itens planejados: {len(result['campaign'])}")
+    print(f"Itens a enviar: {len(campaign)}")
+
+    sent_campaign = send_campaign(campaign, dry_run=args.dry_run)
     sent_file_path = save_sent_campaign_to_json(
         sent_campaign,
         campaign_type=result["campaign_type"],
@@ -47,6 +72,34 @@ def run_campaign(args: argparse.Namespace) -> str:
     return sent_file_path
 
 
+def run_diagnostics(report_path: str | None = None) -> None:
+    print("Diagnostico de pre-voo")
+
+    if not settings.google_service_account_file.exists():
+        raise FileNotFoundError(
+            f"Arquivo de service account nao encontrado: {settings.google_service_account_file}"
+        )
+    if not settings.google_sheet_contatos_url.strip():
+        raise ValueError("GOOGLE_SHEET_CONTATOS_URL nao configurada")
+    if not settings.google_sheet_dados_url.strip():
+        raise ValueError("GOOGLE_SHEET_DADOS_URL nao configurada")
+
+    evolution_api_service.validate_configuration()
+
+    contacts = CampaignOrchestrator().contacts_provider.fetch_contacts()
+    if not contacts:
+        raise ValueError("Nenhum contato disponivel na planilha configurada")
+
+    resolved_report_path = Path(report_path or settings.consolidated_report_path)
+    if resolved_report_path.exists():
+        print(f"Consolidado configurado: {resolved_report_path}")
+    else:
+        print(f"Consolidado ausente para campanha de faltas: {resolved_report_path}")
+
+    print(f"Contatos disponiveis: {len(contacts)}")
+    print("Diagnostico concluido com sucesso")
+
+
 def run_server() -> None:
     import uvicorn
 
@@ -58,11 +111,19 @@ def run_server() -> None:
     )
 
 
+def _limit_campaign(campaign: list[dict], max_items: int | None) -> list[dict]:
+    if max_items is None or max_items <= 0:
+        return campaign
+    return campaign[:max_items]
+
+
 if __name__ == "__main__":
     parser = build_parser()
     args = parser.parse_args()
 
-    if args.tipo:
+    if args.diagnostico:
+        run_diagnostics(report_path=args.report_path)
+    elif args.tipo:
         run_campaign(args)
     else:
         run_server()

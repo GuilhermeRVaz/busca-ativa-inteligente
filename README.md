@@ -56,6 +56,16 @@ WEBHOOK_VERIFY_TOKEN=change-me
 DATA_DIR=data/storage
 CONSOLIDATED_REPORT_PATH=relatorios/Relatorio_Consolidado_BuscaAtiva.xlsx
 
+EVOLUTION_API_URL=https://sua-evolution.example.com
+EVOLUTION_API_KEY=sua-chave
+EVOLUTION_API_INSTANCE=sua-instancia
+EVOLUTION_TIMEOUT_SECONDS=30
+SEND_MIN_DELAY_SECONDS=20
+SEND_MAX_DELAY_SECONDS=40
+SEND_BATCH_EXTRA_EVERY=10
+SEND_BATCH_EXTRA_DELAY_MIN_SECONDS=60
+SEND_BATCH_EXTRA_DELAY_MAX_SECONDS=120
+
 GOOGLE_SERVICE_ACCOUNT_FILE=service-account.json
 
 GOOGLE_SHEET_CONTATOS_URL=https://docs.google.com/spreadsheets/d/...
@@ -98,7 +108,9 @@ Use estes cabecalhos:
 - `data_hora`
 - `telefone`
 - `mensagem`
-- `classificacao`
+- `intencao`
+- `motivo`
+- `observacao`
 - `campaign_id`
 - `origem`
 
@@ -125,3 +137,25 @@ Gerar campanha de reuniao:
 ```bash
 python main.py --tipo reuniao
 ```
+
+Gerar campanha sem enviar para a Evolution:
+
+```bash
+python main.py --tipo reuniao --dry-run --max-items 3
+```
+
+Executar diagnostico de pre-voo:
+
+```bash
+python main.py --diagnostico
+```
+
+## Homologacao segura
+
+Para testar com 2 ou 3 numeros controlados:
+
+1. Crie uma aba ou planilha de contatos de teste com apenas esses registros.
+2. Aponte `GOOGLE_SHEET_CONTATOS_URL` e `GOOGLE_SHEET_CONTATOS_WORKSHEET` para essa origem.
+3. Rode primeiro `python main.py --tipo reuniao --dry-run --max-items 3`.
+4. Rode depois `python main.py --tipo reuniao --max-items 3`.
+5. Responda uma mensagem e valide `incoming_messages.json` e a planilha de dados.

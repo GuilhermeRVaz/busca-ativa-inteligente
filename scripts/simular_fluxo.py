@@ -5,6 +5,8 @@ from typing import Any
 
 from core.config import settings
 from data.repository import repository
+from services.evolution_api import evolution_api_service
+from services.sender import send_campaign
 from services.webhook_service import webhook_service
 
 MODO = "online"  # "offline" ou "online"
@@ -35,6 +37,9 @@ def validar_config() -> None:
     if not settings.google_sheet_dados_url.strip():
         raise ValueError("GOOGLE_SHEET_DADOS_URL nao configurada")
 
+    if MODO == "online":
+        evolution_api_service.validate_configuration()
+
     log_ok("Configuracao validada")
 
 
@@ -44,9 +49,9 @@ def carregar_contatos() -> list[dict[str, str]]:
             {
                 "Nome do Aluno": "Joao Silva",
                 "Turma": "7A",
-                "Telefone 1": "(14) 981324832",
+                "Telefone 1": "(14) 98132-4832",
                 "Telefone 2": "123",
-                "Celular 3": "14 982307099",
+                "Celular 3": "14 98230-7099",
             }
         ]
         contatos = repository._records_to_contacts(records)
@@ -62,31 +67,30 @@ def carregar_contatos() -> list[dict[str, str]]:
 
 def simular_campanha(contatos: list[dict[str, str]]) -> list[dict[str, Any]]:
     selecionados = contatos[:2]
-    mensagens = []
-    for contato in selecionados:
-        student_name = contato.get("student_name") or "Aluno(a)"
-        phone = contato.get("phone1") or contato.get("phone2") or contato.get("phone3")
-        mensagens.append(
-            {
-                "student_name": student_name,
-                "phone": phone,
-                "text": f"Ola {student_name}, aqui e da escola. Mensagem de teste.",
-            }
-        )
-
-    if not mensagens:
+    if not selecionados:
         raise ValueError("Nenhum contato valido para simular campanha")
 
-    for item in mensagens:
-        _fake_send(item["phone"], item["text"])
+    campaign = [
+        {
+            "campaign_id": "simulacao_e2e",
+            "student_name": contato.get("student_name") or "Aluno(a)",
+            "class_name": contato.get("class_name") or "Teste",
+            "phone": contato.get("phone1") or contato.get("phone2") or contato.get("phone3"),
+            "message": (
+                f"Ola {contato.get('student_name') or 'Aluno(a)'}, "
+                "aqui e da escola. Mensagem de teste."
+            ),
+            "status": "pending",
+        }
+        for contato in selecionados
+    ]
+
+    sent_campaign = send_campaign(campaign, dry_run=(MODO == "offline"))
+    if not sent_campaign:
+        raise ValueError("Falha ao simular campanha")
 
     log_ok("Campanha simulada")
-    return mensagens
-
-
-def _fake_send(phone: str, text: str) -> dict[str, Any]:
-    print(f"[INFO] Envio fake | phone={phone} | text={text}")
-    return {"status": "sent", "phone": phone, "text": text}
+    return sent_campaign
 
 
 def simular_webhook() -> dict[str, str]:
@@ -94,7 +98,7 @@ def simular_webhook() -> dict[str, str]:
         "event": "messages.upsert",
         "data": {
             "key": {
-                "remoteJid": "5514981324832@s.whatsapp.net",
+                "remoteJid": "5514999999999@s.whatsapp.net",
                 "fromMe": False,
                 "id": "TESTE123",
             },
@@ -119,6 +123,10 @@ def validar_classificacao(result: dict[str, str]) -> None:
     classificacao = result.get("classificacao", "")
     if classificacao not in VALID_CLASSIFICACOES:
         raise ValueError(f"Classificacao invalida: {classificacao}")
+    if not result.get("motivo"):
+        raise ValueError("Motivo ausente na classificacao")
+    if not result.get("observacao"):
+        raise ValueError("Observacao ausente na classificacao")
     log_ok("Classificacao realizada")
 
 
