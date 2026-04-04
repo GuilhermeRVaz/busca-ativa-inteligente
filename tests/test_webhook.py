@@ -46,11 +46,12 @@ def test_webhook_processes_complete_payload(monkeypatch) -> None:
     monkeypatch.setattr(
         repository,
         "resolver_contexto_aluno",
-        lambda telefone, student_name="": {
+        lambda telefone, student_name="", push_name="", data_hora="": {
             "student_name": "Joao Silva",
             "class_name": "7A",
             "ra": "000123456789-1/SP",
             "tipo_responsavel": "mae",
+            "numero_chamado": "5514999999999",
         },
     )
     monkeypatch.setattr(repository, "salvar_interacao", lambda data: saved.update(data))
@@ -66,6 +67,8 @@ def test_webhook_processes_complete_payload(monkeypatch) -> None:
     assert response.json()["class_name"] == "7A"
     assert response.json()["ra"] == "000123456789-1/SP"
     assert response.json()["tipo_responsavel"] == "mae"
+    assert response.json()["numero_chamado"] == "5514999999999"
+    assert response.json()["identificador_remetente"] == "5514999999999"
     assert saved["telefone"] == "5514999999999"
     assert saved["mensagem"] == "acho que volto sim"
     assert saved["classificacao"] == "RETORNAR"
@@ -76,6 +79,8 @@ def test_webhook_processes_complete_payload(monkeypatch) -> None:
     assert saved["class_name"] == "7A"
     assert saved["ra"] == "000123456789-1/SP"
     assert saved["tipo_responsavel"] == "mae"
+    assert saved["numero_chamado"] == "5514999999999"
+    assert saved["identificador_remetente"] == "5514999999999"
     assert saved["campaign_id"] == ""
     assert saved["origem"] == "whatsapp"
     assert saved["data_hora"]
@@ -96,11 +101,12 @@ def test_webhook_handles_missing_conversation_with_safe_fallback(monkeypatch) ->
     monkeypatch.setattr(
         repository,
         "resolver_contexto_aluno",
-        lambda telefone, student_name="": {
+        lambda telefone, student_name="", push_name="", data_hora="": {
             "student_name": "Joao Silva",
             "class_name": "7A",
             "ra": "000123456789-1/SP",
             "tipo_responsavel": "mae",
+            "numero_chamado": "5514999999999",
         },
     )
     monkeypatch.setattr(repository, "salvar_interacao", lambda data: saved.update(data))
@@ -115,6 +121,8 @@ def test_webhook_handles_missing_conversation_with_safe_fallback(monkeypatch) ->
     assert saved["class_name"] == "7A"
     assert saved["ra"] == "000123456789-1/SP"
     assert saved["tipo_responsavel"] == "mae"
+    assert saved["numero_chamado"] == "5514999999999"
+    assert saved["identificador_remetente"] == "5514999999999"
     assert saved["campaign_id"] == ""
     assert saved["origem"] == "whatsapp"
 
@@ -235,7 +243,8 @@ def test_repository_salvar_interacao_appends_expected_columns(monkeypatch, tmp_p
                 "class_name",
                 "ra",
                 "tipo_responsavel",
-                "telefone",
+                "numero_chamado",
+                "identificador_remetente",
                 "mensagem",
                 "intencao",
                 "motivo",
@@ -285,6 +294,7 @@ def test_repository_salvar_interacao_appends_expected_columns(monkeypatch, tmp_p
             "",
             "",
             "",
+            "5514999999999",
             "5514999999999",
             "acho que volto sim",
             "RETORNAR",
@@ -441,6 +451,58 @@ def test_repository_resolver_contexto_aluno_by_phone_enriches_ra_and_tipo(
         "class_name": "6 ANO 6A INTEGRAL 9H ANUAL",
         "ra": "000115238654-2/SP",
         "tipo_responsavel": "mae",
+        "numero_chamado": "14997906412",
+    }
+
+
+def test_repository_resolver_contexto_aluno_uses_recent_outbound_for_lid_reply(
+    monkeypatch, tmp_path: Path
+) -> None:
+    incoming_file = tmp_path / "incoming_messages.json"
+    incoming_file.write_text(
+        json.dumps(
+            [
+                {
+                    "data_hora": "2026-04-02T17:07:44",
+                    "student_name": "Guilherme Usando Teste",
+                    "class_name": "6 ANO 6A INTEGRAL 9H ANUAL",
+                    "ra": "000112554122-4/SP",
+                    "tipo_responsavel": "doce",
+                    "numero_chamado": "5514981324832",
+                    "telefone": "5514981324832@s.whatsapp.net",
+                    "mensagem": "Teste",
+                    "origem": "whatsapp_outbound",
+                    "raw_payload": {"event": "send.message"},
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(repository, "incoming_messages_file", incoming_file)
+    monkeypatch.setattr(repository, "carregar_contatos", lambda: [])
+    monkeypatch.setattr(
+        repository,
+        "_find_student_context_in_consolidated",
+        lambda student_name, ra: {
+            "student_name": "Guilherme Usando Teste",
+            "class_name": "6 ANO 6A INTEGRAL 9H ANUAL",
+            "ra": "000112554122-4/SP",
+        },
+    )
+
+    context = repository.resolver_contexto_aluno(
+        "22153491648743@lid",
+        push_name="Guilherme",
+        data_hora="2026-04-02T17:09:03.619665",
+    )
+
+    assert context == {
+        "student_name": "Guilherme Usando Teste",
+        "class_name": "6 ANO 6A INTEGRAL 9H ANUAL",
+        "ra": "000112554122-4/SP",
+        "tipo_responsavel": "doce",
+        "numero_chamado": "5514981324832",
     }
 
 

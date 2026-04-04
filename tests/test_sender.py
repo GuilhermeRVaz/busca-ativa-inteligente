@@ -21,6 +21,7 @@ def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
             "class_name": "",
             "ra": "",
             "tipo_responsavel": "",
+            "numero_chamado": "14999991111",
         },
     )
 
@@ -87,6 +88,7 @@ def test_send_campaign_persists_outbound_interaction(monkeypatch: pytest.MonkeyP
             "class_name": "7A",
             "ra": "000123456789-1/SP",
             "tipo_responsavel": "mae",
+            "numero_chamado": "14999991111",
         },
     )
 
@@ -110,6 +112,8 @@ def test_send_campaign_persists_outbound_interaction(monkeypatch: pytest.MonkeyP
     assert payload["class_name"] == "7A"
     assert payload["ra"] == "000123456789-1/SP"
     assert payload["tipo_responsavel"] == "mae"
+    assert payload["numero_chamado"] == "5514999991111"
+    assert payload["identificador_remetente"] == "5514999991111@s.whatsapp.net"
     assert payload["telefone"] == "5514999991111@s.whatsapp.net"
     assert payload["mensagem"] == "Teste"
     assert payload["intencao"] == "OUTBOUND"

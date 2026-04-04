@@ -21,6 +21,8 @@ def receive_message(payload: dict) -> dict:
         "received": True,
         "classification": result["classificacao"],
         "telefone": result["telefone"],
+        "numero_chamado": result.get("numero_chamado", ""),
+        "identificador_remetente": result.get("identificador_remetente", ""),
         "student_name": result.get("student_name", ""),
         "class_name": result.get("class_name", ""),
         "ra": result.get("ra", ""),

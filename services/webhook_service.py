@@ -53,7 +53,12 @@ class WebhookService:
         mensagem = self._extract_message(payload)
         campaign_id = self._extract_campaign_id(payload)
         push_name = self._extract_push_name(payload)
-        context = repository.resolver_contexto_aluno(telefone, student_name="")
+        context = repository.resolver_contexto_aluno(
+            telefone,
+            student_name="",
+            push_name=push_name,
+            data_hora=datetime.now().isoformat(),
+        )
         student_name = context.get("student_name", "")
         class_name = context.get("class_name", "")
         ra = context.get("ra", "")
@@ -99,6 +104,8 @@ class WebhookService:
 
         repository.salvar_interacao(
             {
+                "numero_chamado": context.get("numero_chamado", ""),
+                "identificador_remetente": telefone,
                 "telefone": telefone,
                 "mensagem": mensagem,
                 "classificacao": intencao,
@@ -137,6 +144,8 @@ class WebhookService:
             "class_name": class_name,
             "ra": ra,
             "tipo_responsavel": tipo_responsavel,
+            "numero_chamado": context.get("numero_chamado", ""),
+            "identificador_remetente": telefone,
             "campaign_id": campaign_id,
             "origem": "whatsapp",
             "data_hora": data_hora,

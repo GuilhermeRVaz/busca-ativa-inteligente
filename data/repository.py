@@ -1,5 +1,6 @@
 import json
 import unicodedata
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,10 @@ class LocalRepository:
         self.messages_file = self.base_path / "messages.json"
         self.incoming_messages_file = self.base_path / "incoming_messages.json"
         self.campaigns_file = self.base_path / "campaigns.json"
+        self._contacts_cache: list[dict[str, str]] | None = None
+        self._contacts_cache_key: tuple[str, str] | None = None
+        self._consolidated_cache: dict[str, dict[str, str]] | None = None
+        self._consolidated_cache_path: str | None = None
 
     def _read_json(self, file_path: Path) -> list[dict[str, Any]]:
         if not file_path.exists():
@@ -92,6 +97,13 @@ class LocalRepository:
         if not settings.google_sheet_contatos_url:
             raise ValueError("Defina GOOGLE_SHEET_CONTATOS_URL para carregar contatos.")
 
+        cache_key = (
+            settings.google_sheet_contatos_url,
+            settings.google_sheet_contatos_worksheet,
+        )
+        if self._contacts_cache is not None and self._contacts_cache_key == cache_key:
+            return list(self._contacts_cache)
+
         worksheets = self._get_worksheets(
             settings.google_sheet_contatos_url,
             settings.google_sheet_contatos_worksheet,
@@ -102,7 +114,10 @@ class LocalRepository:
         records: list[dict[str, Any]] = []
         for worksheet in worksheets:
             records.extend(worksheet.get_all_records())
-        return self._records_to_contacts(records)
+        contacts = self._records_to_contacts(records)
+        self._contacts_cache = contacts
+        self._contacts_cache_key = cache_key
+        return list(contacts)
 
     def salvar_interacao(self, data: dict[str, Any]) -> None:
         entry = {
@@ -111,6 +126,12 @@ class LocalRepository:
             "class_name": str(data.get("class_name", "")).strip(),
             "ra": str(data.get("ra", "")).strip(),
             "tipo_responsavel": str(data.get("tipo_responsavel", "")).strip(),
+            "numero_chamado": str(
+                data.get("numero_chamado", data.get("telefone", ""))
+            ).strip(),
+            "identificador_remetente": str(
+                data.get("identificador_remetente", data.get("telefone", ""))
+            ).strip(),
             "telefone": str(data.get("telefone", "")).strip(),
             "mensagem": str(data.get("mensagem", "")),
             "classificacao": str(data.get("classificacao", "")).strip(),
@@ -219,7 +240,8 @@ class LocalRepository:
             entry["class_name"],
             entry["ra"],
             entry["tipo_responsavel"],
-            entry["telefone"],
+            entry["numero_chamado"],
+            entry["identificador_remetente"],
             entry["mensagem"],
             entry["intencao"],
             entry["motivo"],
@@ -252,6 +274,8 @@ class LocalRepository:
         telefone: str,
         *,
         student_name: str = "",
+        push_name: str = "",
+        data_hora: str = "",
     ) -> dict[str, str]:
         normalized_phone = self._normalize_phone_lookup(telefone)
         if normalized_phone:
@@ -267,8 +291,16 @@ class LocalRepository:
                         "class_name": "",
                         "ra": "",
                         "tipo_responsavel": "",
+                        "numero_chamado": self._find_sent_phone_by_student_name(campaign_name),
                     }
                 )
+
+        recent_outbound_context = self._find_context_from_recent_outbound(
+            push_name=push_name,
+            data_hora=data_hora,
+        )
+        if recent_outbound_context:
+            return recent_outbound_context
 
         if student_name.strip():
             return self._merge_with_consolidated_context(
@@ -277,6 +309,7 @@ class LocalRepository:
                     "class_name": "",
                     "ra": "",
                     "tipo_responsavel": "",
+                    "numero_chamado": "",
                 }
             )
 
@@ -285,6 +318,7 @@ class LocalRepository:
             "class_name": "",
             "ra": "",
             "tipo_responsavel": "",
+            "numero_chamado": "",
         }
 
     def limpar_interacoes_salvas(self) -> int:
@@ -357,7 +391,8 @@ class LocalRepository:
                 entry.get("class_name", ""),
                 entry.get("ra", ""),
                 entry.get("tipo_responsavel", ""),
-                entry.get("telefone", ""),
+                entry.get("numero_chamado", entry.get("telefone", "")),
+                entry.get("identificador_remetente", entry.get("telefone", "")),
                 entry.get("mensagem", ""),
                 entry.get("intencao", ""),
                 entry.get("motivo", ""),
@@ -383,7 +418,12 @@ class LocalRepository:
         context = self.resolver_contexto_aluno(
             phone,
             student_name=str(entry.get("student_name", "")).strip(),
+            push_name=str((entry.get("raw_payload") or {}).get("data", {}).get("pushName", "")).strip(),
+            data_hora=str(entry.get("data_hora", "")).strip(),
         )
+        fallback_numero_chamado = str(entry.get("numero_chamado", "")).strip() or str(
+            entry.get("telefone", "")
+        ).strip()
         cleaned_entry["student_name"] = str(entry.get("student_name", "")).strip() or context.get(
             "student_name",
             "",
@@ -397,6 +437,12 @@ class LocalRepository:
             "tipo_responsavel",
             "",
         )
+        cleaned_entry["numero_chamado"] = context.get(
+            "numero_chamado", ""
+        ) or fallback_numero_chamado
+        cleaned_entry["identificador_remetente"] = str(
+            entry.get("identificador_remetente", "")
+        ).strip() or str(entry.get("telefone", "")).strip()
         return cleaned_entry
 
     @staticmethod
@@ -421,6 +467,19 @@ class LocalRepository:
                     return str(item.get("student_name", "")).strip()
         return ""
 
+    def _find_sent_phone_by_student_name(self, student_name: str) -> str:
+        campaigns_dir = self.base_path / "campaigns"
+        if not campaigns_dir.exists():
+            return ""
+
+        normalized_student_name = self._normalize_text_lookup(student_name)
+        for file_path in sorted(campaigns_dir.glob("*_sent.json"), reverse=True):
+            for item in self._read_json(file_path):
+                if self._normalize_text_lookup(item.get("student_name")) != normalized_student_name:
+                    continue
+                return self._strip_whatsapp_suffix(str(item.get("phone", "")).strip())
+        return ""
+
     def _find_student_name_in_contacts_by_phone(self, telefone: str) -> str:
         for contact in self.carregar_contatos():
             phones = [
@@ -442,6 +501,7 @@ class LocalRepository:
                     "class_name": str(contact.get("class_name", "")).strip(),
                     "ra": str(contact.get("ra", "")).strip(),
                     "tipo_responsavel": str(contact.get(f"responsible_type{index}", "")).strip(),
+                    "numero_chamado": str(contact.get(f"phone{index}", "")).strip(),
                 }
         return {}
 
@@ -451,6 +511,7 @@ class LocalRepository:
             "class_name": str(context.get("class_name", "")).strip(),
             "ra": str(context.get("ra", "")).strip(),
             "tipo_responsavel": str(context.get("tipo_responsavel", "")).strip(),
+            "numero_chamado": str(context.get("numero_chamado", "")).strip(),
         }
         consolidated = self._find_student_context_in_consolidated(
             merged["student_name"],
@@ -471,6 +532,25 @@ class LocalRepository:
         if not report_path.exists():
             return {}
 
+        consolidated_index = self._load_consolidated_index(report_path)
+        if not consolidated_index:
+            return {}
+
+        normalized_ra = self._normalize_ra_lookup(ra)
+        if normalized_ra and normalized_ra in consolidated_index:
+            return dict(consolidated_index[normalized_ra])
+
+        normalized_name = self._normalize_text_lookup(student_name)
+        if normalized_name and normalized_name in consolidated_index:
+            return dict(consolidated_index[normalized_name])
+
+        return {}
+
+    def _load_consolidated_index(self, report_path: Path) -> dict[str, dict[str, str]]:
+        cache_path = str(report_path.resolve())
+        if self._consolidated_cache is not None and self._consolidated_cache_path == cache_path:
+            return self._consolidated_cache
+
         try:
             workbook = load_workbook(report_path, data_only=True)
         except Exception as exc:
@@ -490,26 +570,89 @@ class LocalRepository:
         if name_index < 0:
             return {}
 
-        normalized_name = self._normalize_text_lookup(student_name)
-        normalized_ra = self._normalize_ra_lookup(ra)
+        index: dict[str, dict[str, str]] = {}
         for row in rows[header_index + 1 :]:
             row_name = str(self._get_row_value(row, name_index)).strip()
             row_ra = str(self._get_row_value(row, ra_index)).strip() if ra_index >= 0 else ""
             row_class = str(self._get_row_value(row, class_index)).strip() if class_index >= 0 else ""
+            if not row_name:
+                continue
 
-            if normalized_ra and self._normalize_ra_lookup(row_ra) == normalized_ra:
-                return {
-                    "student_name": row_name,
-                    "class_name": row_class,
-                    "ra": self._format_ra_from_consolidated(row_ra),
-                }
+            context = {
+                "student_name": row_name,
+                "class_name": row_class,
+                "ra": self._format_ra_from_consolidated(row_ra),
+            }
+            normalized_name = self._normalize_text_lookup(row_name)
+            normalized_ra = self._normalize_ra_lookup(row_ra)
+            if normalized_name:
+                index[normalized_name] = context
+            if normalized_ra:
+                index[normalized_ra] = context
 
-            if normalized_name and self._normalize_text_lookup(row_name) == normalized_name:
-                return {
-                    "student_name": row_name,
-                    "class_name": row_class,
-                    "ra": self._format_ra_from_consolidated(row_ra),
+        self._consolidated_cache = index
+        self._consolidated_cache_path = cache_path
+        return index
+
+    def _find_context_from_recent_outbound(
+        self,
+        *,
+        push_name: str,
+        data_hora: str,
+    ) -> dict[str, str]:
+        normalized_push_name = self._normalize_text_lookup(push_name)
+        entries = self._read_json(self.incoming_messages_file)
+        inbound_time = self._parse_iso_datetime(data_hora)
+        candidates: list[dict[str, str]] = []
+
+        for entry in reversed(entries):
+            if str(entry.get("origem", "")).strip().lower() != "whatsapp_outbound":
+                continue
+
+            student_name = str(entry.get("student_name", "")).strip()
+            if not student_name:
+                continue
+
+            entry_time = self._parse_iso_datetime(str(entry.get("data_hora", "")).strip())
+            if inbound_time and entry_time:
+                if entry_time > inbound_time:
+                    continue
+                if inbound_time - entry_time > timedelta(hours=12):
+                    continue
+
+            normalized_student = self._normalize_text_lookup(student_name)
+            if normalized_push_name and self._push_name_matches_student(
+                normalized_push_name,
+                normalized_student,
+            ):
+                return self._merge_with_consolidated_context(
+                    {
+                        "student_name": student_name,
+                        "class_name": str(entry.get("class_name", "")).strip(),
+                        "ra": str(entry.get("ra", "")).strip(),
+                        "tipo_responsavel": str(entry.get("tipo_responsavel", "")).strip(),
+                        "numero_chamado": str(
+                            entry.get("numero_chamado", entry.get("telefone", ""))
+                        ).strip(),
+                    }
+                )
+
+            candidates.append(
+                {
+                    "student_name": student_name,
+                    "class_name": str(entry.get("class_name", "")).strip(),
+                    "ra": str(entry.get("ra", "")).strip(),
+                    "tipo_responsavel": str(entry.get("tipo_responsavel", "")).strip(),
+                    "numero_chamado": str(
+                        entry.get("numero_chamado", entry.get("telefone", ""))
+                    ).strip(),
                 }
+            )
+            if len(candidates) >= 5:
+                break
+
+        if len(candidates) == 1:
+            return self._merge_with_consolidated_context(candidates[0])
 
         return {}
 
@@ -553,6 +696,27 @@ class LocalRepository:
         return " ".join(str(value or "").strip().split())
 
     @staticmethod
+    def _strip_whatsapp_suffix(value: str) -> str:
+        return value.replace("@s.whatsapp.net", "").replace("+", "").strip()
+
+    @staticmethod
+    def _parse_iso_datetime(value: str) -> datetime | None:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _push_name_matches_student(push_name: str, student_name: str) -> bool:
+        push_tokens = [token for token in push_name.split() if token]
+        student_tokens = [token for token in student_name.split() if token]
+        if not push_tokens or not student_tokens:
+            return False
+        return push_tokens[0] == student_tokens[0]
+
+    @staticmethod
     def _is_outbound_interaction(entry: dict[str, Any]) -> bool:
         origem = str(entry.get("origem", "")).strip().lower()
         if origem == "whatsapp_outbound":
@@ -572,7 +736,8 @@ class LocalRepository:
             "class_name",
             "ra",
             "tipo_responsavel",
-            "telefone",
+            "numero_chamado",
+            "identificador_remetente",
             "mensagem",
             "intencao",
             "motivo",

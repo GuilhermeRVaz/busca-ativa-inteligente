@@ -181,6 +181,8 @@ def _save_outbound_interaction(
             or str(item.get("class_name", "")).strip(),
             "ra": context.get("ra", "").strip(),
             "tipo_responsavel": context.get("tipo_responsavel", "").strip(),
+            "numero_chamado": repository._strip_whatsapp_suffix(phone),
+            "identificador_remetente": phone,
             "telefone": phone,
             "mensagem": str(item.get("message", "")).strip(),
             "classificacao": "OUTBOUND",
