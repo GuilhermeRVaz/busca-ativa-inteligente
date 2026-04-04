@@ -1,0 +1,17 @@
+{
+    "periodo": "2026-04-04 até 2026-04-04",
+    "total_faltantes": 1,
+    "total_contatados": 1,
+    "total_responderam": 2,
+    "total_justificaram": 1,
+    "total_vai_regularizar": 0,
+    "total_resistencia": 0,
+    "motivos": {
+        "SAUDE": 2,
+        "TRANSPORTE": 0,
+        "FAMILIAR": 0,
+        "ESCOLAR": 0,
+        "LOGISTICA": 0,
+        "OUTROS": 0
+    }
+}

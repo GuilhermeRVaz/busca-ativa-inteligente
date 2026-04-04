@@ -4,7 +4,7 @@ import os
 from dotenv import load_dotenv
 
 
-load_dotenv()
+load_dotenv(override=True)
 
 
 class Settings:
@@ -55,6 +55,9 @@ class Settings:
             "GOOGLE_SHEET_DADOS_WORKSHEET",
             "*",
         )
+
+        self.supabase_url = os.getenv("SUPABASE_URL", "")
+        self.supabase_key = os.getenv("SUPABASE_KEY", "")
 
 
 settings = Settings()

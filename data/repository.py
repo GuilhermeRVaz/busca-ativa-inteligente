@@ -9,6 +9,7 @@ from openpyxl import load_workbook
 
 from core.config import settings
 from core.logging import get_logger
+from data import supabase_repository
 
 
 logger = get_logger(__name__)
@@ -154,6 +155,7 @@ class LocalRepository:
 
         self._save_incoming_json(entry)
         self._save_incoming_google_sheet(entry)
+        self._save_to_supabase(entry)
 
     def save_incoming_message(
         self,
@@ -207,6 +209,52 @@ class LocalRepository:
         )
         self._write_json(self.campaigns_file, campaigns)
 
+        try:
+            supabase_repository.registrar_campaign(
+                {"campaign_id": campaign_id, "tipo": event_type, **(payload or {})}
+            )
+        except Exception as exc:
+            logger.error("erro ao salvar campaign no supabase | erro=%s", exc)
+
+    def _save_to_supabase(self, entry: dict[str, Any]) -> None:
+        """Salva no Supabase (messages + students). Nunca quebra o fluxo."""
+        try:
+            raw_payload = entry.get("raw_payload") or {}
+            message_id = self._extract_message_id(raw_payload)
+            if not message_id:
+                message_id = f"{entry.get('telefone', 'unknown')}_{entry.get('data_hora', '')}"
+
+            direcao = "outbound" if self._is_outbound_interaction(entry) else "inbound"
+
+            supabase_repository.salvar_mensagem(
+                {
+                    "id": message_id,
+                    "telefone": entry.get("telefone", ""),
+                    "ra": entry.get("ra", ""),
+                    "nome_aluno": entry.get("student_name", ""),
+                    "turma": entry.get("class_name", ""),
+                    "direcao": direcao,
+                    "tipo": "texto",
+                    "mensagem": entry.get("mensagem", ""),
+                    "tipo_resposta": entry.get("intencao", ""),
+                    "motivo": entry.get("motivo", ""),
+                    "campaign_id": entry.get("campaign_id", ""),
+                    "origem": entry.get("origem", "whatsapp"),
+                }
+            )
+
+            supabase_repository.atualizar_student(
+                {
+                    "telefone": entry.get("telefone", ""),
+                    "student_name": entry.get("student_name", ""),
+                    "class_name": entry.get("class_name", ""),
+                    "ra": entry.get("ra", ""),
+                    "intencao": entry.get("intencao", ""),
+                }
+            )
+        except Exception as exc:
+            logger.error("erro ao salvar no supabase | erro=%s", exc)
+
     def _save_incoming_json(self, entry: dict[str, Any]) -> None:
         messages = self._read_json(self.incoming_messages_file)
         messages.append(entry)
@@ -235,19 +283,13 @@ class LocalRepository:
             return
 
         row = [
-            entry["data_hora"],
-            entry["student_name"],
-            entry["class_name"],
-            entry["ra"],
-            entry["tipo_responsavel"],
-            entry["numero_chamado"],
-            entry["identificador_remetente"],
-            entry["mensagem"],
-            entry["intencao"],
-            entry["motivo"],
-            entry["observacao"],
-            entry["campaign_id"],
-            entry["origem"],
+            entry.get("data_hora", ""),
+            entry.get("student_name", ""),
+            entry.get("class_name", ""),
+            entry.get("telefone", ""),
+            entry.get("mensagem", ""),
+            entry.get("intencao", ""),
+            entry.get("motivo", ""),
         ]
 
         try:
@@ -389,16 +431,10 @@ class LocalRepository:
                 entry.get("data_hora", ""),
                 entry.get("student_name", ""),
                 entry.get("class_name", ""),
-                entry.get("ra", ""),
-                entry.get("tipo_responsavel", ""),
-                entry.get("numero_chamado", entry.get("telefone", "")),
-                entry.get("identificador_remetente", entry.get("telefone", "")),
+                entry.get("telefone", ""),
                 entry.get("mensagem", ""),
                 entry.get("intencao", ""),
                 entry.get("motivo", ""),
-                entry.get("observacao", ""),
-                entry.get("campaign_id", ""),
-                entry.get("origem", "whatsapp"),
             ]
             for entry in entries
         ]
@@ -731,19 +767,13 @@ class LocalRepository:
     @staticmethod
     def _incoming_sheet_header() -> list[str]:
         return [
-            "data_hora",
-            "student_name",
-            "class_name",
-            "ra",
-            "tipo_responsavel",
-            "numero_chamado",
-            "identificador_remetente",
+            "data",
+            "aluno",
+            "turma",
+            "telefone",
             "mensagem",
-            "intencao",
+            "tipo_resposta",
             "motivo",
-            "observacao",
-            "campaign_id",
-            "origem",
         ]
 
     def _records_to_contacts(self, records: list[dict[str, Any]]) -> list[dict[str, str]]:

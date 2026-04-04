@@ -1,3 +1,16 @@
+"""
+Serviço de processamento de webhooks do WhatsApp (Evolution API).
+
+Regras de validação (aplicadas ANTES de qualquer processamento):
+  1. Payload deve ser do tipo messages.upsert e não fromMe
+  2. Telefone com @lid → ignorado (grupo/evento interno)
+  3. Telefone vazio ou inválido → ignorado
+  4. Mensagem duplicada (message_id já registrado) → ignorada
+
+Fluxo de dados (UMA classificação, replicada para todos os destinos):
+  payload → normaliza_phone → classifica → salvar_interacao (JSON + Sheets + Supabase)
+"""
+
 from datetime import datetime
 from typing import Any
 
@@ -8,103 +21,87 @@ from data.repository import repository
 
 logger = get_logger(__name__)
 
+_IGNORED_RESULT_TEMPLATE: dict[str, str] = {
+    "telefone": "",
+    "mensagem": "",
+    "classificacao": "IGNORADO",
+    "intencao": "IGNORADO",
+    "motivo": "IGNORADO",
+    "observacao": "",
+    "student_name": "",
+    "class_name": "",
+    "ra": "",
+    "tipo_responsavel": "",
+    "campaign_id": "",
+    "origem": "whatsapp",
+}
+
+
+def _make_ignored(observacao: str) -> dict[str, str]:
+    result = dict(_IGNORED_RESULT_TEMPLATE)
+    result["observacao"] = observacao
+    result["data_hora"] = datetime.now().isoformat()
+    return result
+
 
 class WebhookService:
     def process_incoming(self, payload: dict[str, Any]) -> dict[str, str]:
         logger.info("Webhook recebido")
 
+        # ── Filtro 1: evento elegível? ──────────────────────────────────────
         if not self._should_process_payload(payload):
             logger.info("Webhook ignorado | evento nao elegivel para interacao")
-            return {
-                "telefone": "",
-                "mensagem": "",
-                "classificacao": "IGNORADO",
-                "intencao": "IGNORADO",
-                "motivo": "IGNORADO",
-                "observacao": "evento ignorado",
-                "student_name": "",
-                "class_name": "",
-                "ra": "",
-                "tipo_responsavel": "",
-                "campaign_id": "",
-                "origem": "whatsapp",
-                "data_hora": datetime.now().isoformat(),
-            }
+            return _make_ignored("evento ignorado")
 
+        # ── Filtro 2: validar telefone ──────────────────────────────────────
+        telefone = self._normalize_and_validate_phone(payload)
+        if telefone is None:
+            # log já foi emitido dentro do método
+            return _make_ignored("telefone invalido ou grupo")
+
+        # ── Filtro 3: idempotência ──────────────────────────────────────────
         if repository.interacao_ja_registrada(payload):
-            logger.info("Webhook ignorado | mensagem duplicada")
-            return {
-                "telefone": "",
-                "mensagem": "",
-                "classificacao": "IGNORADO",
-                "intencao": "IGNORADO",
-                "motivo": "IGNORADO",
-                "observacao": "mensagem duplicada",
-                "student_name": "",
-                "class_name": "",
-                "ra": "",
-                "tipo_responsavel": "",
-                "campaign_id": "",
-                "origem": "whatsapp",
-                "data_hora": datetime.now().isoformat(),
-            }
+            logger.info("Webhook ignorado | mensagem duplicada | telefone=%s", telefone)
+            return _make_ignored("mensagem duplicada")
 
-        telefone = self._extract_phone(payload)
+        # ── Extrair dados ───────────────────────────────────────────────────
         mensagem = self._extract_message(payload)
         campaign_id = self._extract_campaign_id(payload)
         push_name = self._extract_push_name(payload)
+        data_hora = datetime.now().isoformat()
+
         context = repository.resolver_contexto_aluno(
             telefone,
             student_name="",
             push_name=push_name,
-            data_hora=datetime.now().isoformat(),
+            data_hora=data_hora,
         )
         student_name = context.get("student_name", "")
         class_name = context.get("class_name", "")
         ra = context.get("ra", "")
         tipo_responsavel = context.get("tipo_responsavel", "")
-        message_id = repository._extract_message_id(payload)
-        data_hora = datetime.now().isoformat()
+        numero_chamado = context.get("numero_chamado", "")
 
         if not mensagem:
-            logger.warning("Webhook recebido sem mensagem textual; usando mensagem vazia")
+            logger.warning("Webhook recebido sem mensagem textual | telefone=%s", telefone)
 
         if not student_name:
             logger.warning(
-                "nome_aluno_nao_resolvido | telefone=%s | push_name=%s | message_id=%s",
+                "nome_aluno_nao_resolvido | telefone=%s | push_name=%s",
                 telefone,
                 push_name,
-                message_id,
             )
 
-        logger.info("Telefone extraido: %s", telefone)
-        logger.info("Mensagem extraida: %s", mensagem)
-
+        # ── Classificação (UMA vez, resultado é a fonte única de verdade) ───
         classificacao = classificar_mensagem(mensagem)
-        intencao = classificacao.get("intencao", "DUVIDA")
-        motivo = classificacao.get("motivo", "OUTRO")
-        observacao = classificacao.get("observacao", "nao foi possivel classificar")
+        intencao = classificacao["intencao"]
+        motivo = classificacao["motivo"]
+        observacao = classificacao["observacao"]
 
-        repository.save_message(
-            conversation_id=telefone,
-            direction="inbound",
-            text=mensagem,
-            metadata={
-                "campaign_id": campaign_id,
-                "student_name": student_name,
-                "class_name": class_name,
-                "ra": ra,
-                "tipo_responsavel": tipo_responsavel,
-                "intencao": intencao,
-                "motivo": motivo,
-                "observacao": observacao,
-                "raw_payload": payload,
-            },
-        )
-
+        # ── Persistir (Supabase + Sheets + JSON via repositório) ─────────────
         repository.salvar_interacao(
             {
-                "numero_chamado": context.get("numero_chamado", ""),
+                "numero_chamado": numero_chamado,
                 "identificador_remetente": telefone,
                 "telefone": telefone,
                 "mensagem": mensagem,
@@ -124,13 +121,12 @@ class WebhookService:
         )
 
         logger.info(
-            "Webhook processado | telefone=%s | aluno=%s | classificacao=%s | motivo=%s | campaign_id=%s | data_hora=%s",
+            "Webhook processado | telefone=%s | aluno=%s | intencao=%s | motivo=%s | campaign=%s",
             telefone,
-            student_name,
+            student_name or "(desconhecido)",
             intencao,
             motivo,
-            campaign_id,
-            data_hora,
+            campaign_id or "(sem campanha)",
         )
 
         return {
@@ -144,33 +140,68 @@ class WebhookService:
             "class_name": class_name,
             "ra": ra,
             "tipo_responsavel": tipo_responsavel,
-            "numero_chamado": context.get("numero_chamado", ""),
+            "numero_chamado": numero_chamado,
             "identificador_remetente": telefone,
             "campaign_id": campaign_id,
             "origem": "whatsapp",
             "data_hora": data_hora,
         }
 
-    def _extract_phone(self, payload: dict[str, Any]) -> str:
-        remote_jid = (
+    # ── Helpers privados ────────────────────────────────────────────────────
+
+    def _normalize_and_validate_phone(self, payload: dict[str, Any]) -> str | None:
+        """
+        Normaliza e valida o telefone do payload.
+        Retorna o telefone limpo (apenas dígitos, com 55...) ou None se inválido.
+
+        Regras:
+          - @lid → None (grupo / evento interno)
+          - @s.whatsapp.net → remove sufixo
+          - resultado com < 10 dígitos → None (inválido)
+          - adiciona prefixo 55 se ausente
+        """
+        raw = (
             payload.get("data", {}).get("key", {}).get("remoteJid")
             or payload.get("phone")
             or payload.get("from")
-            or "unknown"
+            or ""
         )
-        return str(remote_jid).replace("@s.whatsapp.net", "").replace("+", "").strip()
+        raw = str(raw).strip()
+
+        # Grupos e eventos internos da Evolution API
+        if "@lid" in raw:
+            logger.info("telefone ignorado (grupo) | raw=%s", raw)
+            return None
+
+        # Remover sufixo WhatsApp e caracteres especiais
+        cleaned = raw.replace("@s.whatsapp.net", "").replace("+", "").strip()
+        digits = "".join(ch for ch in cleaned if ch.isdigit())
+
+        if len(digits) < 10:
+            logger.warning("telefone invalido | raw=%s | digits=%s", raw, digits)
+            return None
+
+        # Garantir prefixo Brasil
+        if not digits.startswith("55"):
+            digits = f"55{digits}"
+
+        return digits
 
     def _extract_message(self, payload: dict[str, Any]) -> str:
         message = payload.get("data", {}).get("message", {})
-        conversation = message.get("conversation")
-        if conversation is None:
-            return str(payload.get("text") or payload.get("message") or "")
-        return str(conversation)
+        if isinstance(message, dict):
+            conversation = message.get("conversation")
+            if conversation is not None:
+                return str(conversation)
+            # Suporte a outros tipos de mensagem (extendedTextMessage, etc.)
+            extended = message.get("extendedTextMessage", {})
+            if isinstance(extended, dict) and extended.get("text"):
+                return str(extended["text"])
+        return str(payload.get("text") or payload.get("message") or "")
 
     def _extract_campaign_id(self, payload: dict[str, Any]) -> str:
         data = payload.get("data", {})
         message = data.get("message", {})
-
         candidates = [
             payload.get("campaign_id"),
             payload.get("campaignId"),
