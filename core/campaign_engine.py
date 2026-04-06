@@ -64,6 +64,7 @@ def generate_campaign(
             student_name=student_name,
             class_name=class_name or str(contact.get("class_name", "")).strip(),
             campaign_type=campaign_type,
+            parent_name=str(contact.get("responsavel_1", "")).strip(),
             school_name=school_name,
             absence_days=absence_days,
             unique_key=f"{campaign_type}|{student_name}|{phone_field}|{phone}",
