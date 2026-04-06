@@ -1,0 +1,1 @@
+import requests, sys; sys.path.append('.'); from core.config import settings; res=requests.post('http://localhost:8080/chat/findChats/escola-decia', json={}, headers={'apikey': settings.evolution_api_key}); c=res.json(); print(f'Total: {len(c)}'); [print(x) for x in c[:2]]

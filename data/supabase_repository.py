@@ -59,23 +59,30 @@ def _get_client():
 
 def normalize_phone(phone: Any) -> str:
     """
-    Normaliza telefone para formato apenas dígitos.
-    - Remove @s.whatsapp.net
-    - Ignora @lid (retorna vazio)
-    - Retorna apenas dígitos no formato 5514...
+    Normaliza telefone para formato apenas dígitos (55...).
+    - Lida com prefixos '+', sufixos '@s.whatsapp.net' e identificadores de dispositivo ':N'.
+    - Identifica e ignora explicitamente o sufixo '@lid'.
     """
     text = str(phone or "").strip()
 
-    if "@lid" in text:
+    if not text:
         return ""
 
-    text = text.replace("@s.whatsapp.net", "").replace("+", "").strip()
+    if "@lid" in text:
+        # Se for um LID explícito, removemos o sufixo para processar os dígitos
+        text = text.replace("@lid", "")
+    
+    # Remove sufixo comum e isola a parte antes do dispositivo (:)
+    # Ex: 5511999999999:1@s.whatsapp.net -> 5511999999999
+    text = text.split("@")[0].split(":")[0].replace("+", "").strip()
+    
     digits = "".join(char for char in text if char.isdigit())
 
     if len(digits) < 10:
         return ""
 
-    if not digits.startswith("55"):
+    # Garantir prefixo Brasil se parecer um número brasileiro (10 ou 11 dígitos sem o 55)
+    if len(digits) in (10, 11) and not digits.startswith("55"):
         digits = f"55{digits}"
 
     return digits

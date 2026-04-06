@@ -216,6 +216,48 @@ class LocalRepository:
         except Exception as exc:
             logger.error("erro ao salvar campaign no supabase | erro=%s", exc)
 
+    def ja_enviado_para_aluno_na_campanha(
+        self, 
+        student_name: str, 
+        phone: str, 
+        campaign_id: str
+    ) -> bool:
+        """
+        Verifica se já existe um registro de envio (outbound) para este aluno
+        nesta campanha específica no Supabase ou Local Json.
+        """
+        if not campaign_id or campaign_id == "unknown":
+            return False
+
+        # 1. Verifica no Supabase (Fonte de verdade mais confiável)
+        try:
+            from data.supabase_repository import supabase_repository
+            query = f"nome_aluno.eq.{student_name},telefone.eq.{phone},campaign_id.eq.{campaign_id},direcao.eq.outbound"
+            result = supabase_repository.client.table("messages").select("id").or_(query).execute()
+            if result.data and len(result.data) > 0:
+                logger.info("Envio ja registrado no Supabase para %s (%s) na campanha %s", student_name, phone, campaign_id)
+                return True
+        except Exception as exc:
+            logger.warning("Falha ao verificar duplicidade no Supabase: %s", exc)
+
+        # 2. Verifica no JSON local de mensagens (Fallback)
+        try:
+            messages = self._read_json(self.messages_file)
+            for msg in messages:
+                meta = msg.get("metadata", {})
+                if (
+                    msg.get("direction") == "outbound" and
+                    meta.get("campaign_id") == campaign_id and
+                    meta.get("student_name") == student_name and
+                    str(meta.get("phone")).strip() == str(phone).strip()
+                ):
+                    logger.info("Envio ja registrado no JSON local para %s (%s)", student_name, phone)
+                    return True
+        except Exception:
+            pass
+
+        return False
+
     def _save_to_supabase(self, entry: dict[str, Any]) -> None:
         """Salva no Supabase (messages + students). Nunca quebra o fluxo."""
         try:
@@ -318,14 +360,51 @@ class LocalRepository:
         student_name: str = "",
         push_name: str = "",
         data_hora: str = "",
+        raw_payload: dict[str, Any] | None = None,
     ) -> dict[str, str]:
         normalized_phone = self._normalize_phone_lookup(telefone)
-        if normalized_phone:
-            contact_context = self._find_contact_context_by_phone(normalized_phone)
+        resolved_phone = ""
+        
+        if raw_payload:
+            data = raw_payload.get("data") or {} if isinstance(raw_payload, dict) else {}
+            stanza_id = str((data.get("contextInfo") or {}).get("stanzaId", "")).strip()
+            remote_jid = str((data.get("key") or {}).get("remoteJid", "")).strip()
+            
+            # Se for um LID (Linked Device ID)
+            is_lid = "@lid" in remote_jid or normalized_phone.startswith("5524") and len(normalized_phone) > 13
+            
+            entries = self._read_json(self.incoming_messages_file)
+            
+            # 1. Tentar por Resposta (stanzaId)
+            if stanza_id:
+                for item in reversed(entries):
+                    if str(item.get("origem", "")) == "whatsapp_outbound":
+                        if self._extract_message_id(item.get("raw_payload") or {}) == stanza_id:
+                            resolved_phone = self._normalize_phone_lookup(item.get("telefone", ""))
+                            if resolved_phone:
+                                logger.info("LID RECURSION | resolvido via stanzaId | LID=%s | real=%s", normalized_phone if is_lid else "", resolved_phone)
+                                break
+            
+            # 2. Tentar por Historico de LID
+            if not resolved_phone and is_lid:
+                for item in reversed(entries):
+                    item_data = (item.get("raw_payload") or {}).get("data") or {} if isinstance(item.get("raw_payload"), dict) else {}
+                    item_jid = str((item_data.get("key") or {}).get("remoteJid", "")).strip()
+                    # Se jid bate e tem nome, pegamos o numero_chamado real
+                    if item_jid == remote_jid and str(item.get("student_name", "")).strip():
+                        resolved_phone = self._normalize_phone_lookup(str(item.get("numero_chamado", "")).strip())
+                        if resolved_phone:
+                            logger.info("LID RECURSION | resolvido via historico | LID=%s | real=%s", normalized_phone, resolved_phone)
+                            break
+        
+        effective_phone = resolved_phone or normalized_phone
+
+        if effective_phone:
+            contact_context = self._find_contact_context_by_phone(effective_phone)
             if contact_context:
                 return self._merge_with_consolidated_context(contact_context)
 
-            campaign_name = self._find_student_name_in_sent_campaigns(normalized_phone)
+            campaign_name = self._find_student_name_in_sent_campaigns(effective_phone)
             if campaign_name:
                 return self._merge_with_consolidated_context(
                     {
@@ -451,15 +530,20 @@ class LocalRepository:
     def _enrich_interaction_entry(self, entry: dict[str, Any]) -> dict[str, Any]:
         phone = str(entry.get("telefone", "")).strip()
         cleaned_entry = dict(entry)
+        
+        raw_payload = entry.get("raw_payload") or {}
+        data = raw_payload.get("data") or {} if isinstance(raw_payload, dict) else {}
+
         context = self.resolver_contexto_aluno(
             phone,
             student_name=str(entry.get("student_name", "")).strip(),
-            push_name=str((entry.get("raw_payload") or {}).get("data", {}).get("pushName", "")).strip(),
+            push_name=str(data.get("pushName", "")).strip(),
             data_hora=str(entry.get("data_hora", "")).strip(),
+            raw_payload=raw_payload,
         )
-        fallback_numero_chamado = str(entry.get("numero_chamado", "")).strip() or str(
-            entry.get("telefone", "")
-        ).strip()
+        
+        # Use o numero do contexto se ele encontrar, senao fallback
+        fallback_numero_chamado = str(entry.get("numero_chamado", "")).strip() or phone
         cleaned_entry["student_name"] = str(entry.get("student_name", "")).strip() or context.get(
             "student_name",
             "",
@@ -699,8 +783,14 @@ class LocalRepository:
         key = data.get("key", {}) if isinstance(data, dict) else {}
         if event != "messages.upsert":
             return False
-        if bool(key.get("fromMe")):
+            
+        from_me = key.get("fromMe")
+        if isinstance(from_me, str):
+            from_me = from_me.lower() == "true"
+        
+        if bool(from_me):
             return False
+            
         return True
 
     @staticmethod
@@ -711,10 +801,26 @@ class LocalRepository:
 
     @staticmethod
     def _normalize_phone_lookup(value: Any) -> str:
-        text = str(value or "").replace("@s.whatsapp.net", "").replace("+", "").strip()
+        """
+        Normaliza telefone para busca interna. 
+        Lida com múltiplos dispositivos (number:device) e sufixos de JID.
+        Retorna apenas os dígitos sem o prefixo 55 se estiver presente.
+        """
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        
+        # Isolar a parte antes de '@' e ':'
+        # Ex: 551499...:1@s.whatsapp.net -> 551499...
+        text = text.split("@")[0].split(":")[0].replace("+", "").strip()
+        
         digits = "".join(char for char in text if char.isdigit())
+        
+        # Brazilian JID optimization: remove country code 55 for internal lookups
         if len(digits) > 11 and digits.startswith("55"):
+            # Apenas se os dígitos seguintes parecerem DDD (11-99)
             digits = digits[2:]
+            
         return digits if len(digits) >= 10 else ""
 
     @staticmethod

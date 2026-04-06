@@ -137,6 +137,14 @@ def _validate_item(item: dict[str, Any], normalized_phone: str) -> str | None:
     if not message:
         return "mensagem_vazia"
 
+    # Anti-duplicidade para permitir retomar campanhas interrompidas
+    if repository.ja_enviado_para_aluno_na_campanha(
+        student_name=str(item.get("student_name", "")).strip(),
+        phone=normalized_phone,
+        campaign_id=str(item.get("campaign_id", "")).strip(),
+    ):
+        return "ja_enviado"
+
     return None
 
 

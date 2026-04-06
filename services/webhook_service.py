@@ -46,22 +46,36 @@ def _make_ignored(observacao: str) -> dict[str, str]:
 
 class WebhookService:
     def process_incoming(self, payload: dict[str, Any]) -> dict[str, str]:
-        logger.info("Webhook recebido")
+        logger.info("INBOUND START")
 
         # ── Filtro 1: evento elegível? ──────────────────────────────────────
         if not self._should_process_payload(payload):
             logger.info("Webhook ignorado | evento nao elegivel para interacao")
+            logger.info("INBOUND END")
             return _make_ignored("evento ignorado")
 
+        # ── Extrair telefone bruto (para log)
+        raw_phone = (
+            payload.get("data", {}).get("key", {}).get("remoteJid")
+            or payload.get("phone")
+            or payload.get("from")
+            or ""
+        )
+        logger.info("telefone extraído | raw=%s", raw_phone)
+
         # ── Filtro 2: validar telefone ──────────────────────────────────────
-        telefone = self._normalize_and_validate_phone(payload)
+        telefone = self._normalize_and_validate_phone(raw_phone)
         if telefone is None:
             # log já foi emitido dentro do método
+            logger.info("INBOUND END")
             return _make_ignored("telefone invalido ou grupo")
+            
+        logger.info("telefone normalizado | raw=%s | limpo=%s", raw_phone, telefone)
 
         # ── Filtro 3: idempotência ──────────────────────────────────────────
         if repository.interacao_ja_registrada(payload):
             logger.info("Webhook ignorado | mensagem duplicada | telefone=%s", telefone)
+            logger.info("INBOUND END")
             return _make_ignored("mensagem duplicada")
 
         # ── Extrair dados ───────────────────────────────────────────────────
@@ -75,6 +89,7 @@ class WebhookService:
             student_name="",
             push_name=push_name,
             data_hora=data_hora,
+            raw_payload=payload,
         )
         student_name = context.get("student_name", "")
         class_name = context.get("class_name", "")
@@ -82,6 +97,7 @@ class WebhookService:
         tipo_responsavel = context.get("tipo_responsavel", "")
         numero_chamado = context.get("numero_chamado", "")
 
+        # Nota: Mensagem vazia não é bloqueio (para evitar discard de mídia)
         if not mensagem:
             logger.warning("Webhook recebido sem mensagem textual | telefone=%s", telefone)
 
@@ -93,41 +109,54 @@ class WebhookService:
             )
 
         # ── Classificação (UMA vez, resultado é a fonte única de verdade) ───
-        classificacao = classificar_mensagem(mensagem)
-        intencao = classificacao["intencao"]
-        motivo = classificacao["motivo"]
-        observacao = classificacao["observacao"]
+        try:
+            classificacao = classificar_mensagem(mensagem)
+            intencao = classificacao.get("intencao", "NAO_IDENTIFICADO")
+            motivo = classificacao.get("motivo", "NAO_IDENTIFICADO")
+            observacao = classificacao.get("observacao", "")
+        except Exception as e:
+            logger.error("Erro na classificação | telefone=%s | erro=%s", telefone, str(e))
+            intencao = "NAO_IDENTIFICADO"
+            motivo = "NAO_IDENTIFICADO"
+            observacao = ""
+            
+        logger.info("classificação aplicada | intencao=%s | motivo=%s | telefone=%s", intencao, motivo, telefone)
 
         # ── Persistir (Supabase + Sheets + JSON via repositório) ─────────────
-        repository.salvar_interacao(
-            {
-                "numero_chamado": numero_chamado,
-                "identificador_remetente": telefone,
-                "telefone": telefone,
-                "mensagem": mensagem,
-                "classificacao": intencao,
-                "intencao": intencao,
-                "motivo": motivo,
-                "observacao": observacao,
-                "student_name": student_name,
-                "class_name": class_name,
-                "ra": ra,
-                "tipo_responsavel": tipo_responsavel,
-                "data_hora": data_hora,
-                "campaign_id": campaign_id,
-                "origem": "whatsapp",
-                "raw_payload": payload,
-            }
-        )
+        logger.info("salvando interação | telefone=%s | msg_len=%d", telefone, len(mensagem))
+        
+        try:
+            repository.salvar_interacao(
+                {
+                    "numero_chamado": numero_chamado,
+                    "identificador_remetente": telefone,
+                    "telefone": telefone,
+                    "mensagem": mensagem,
+                    "classificacao": intencao,
+                    "intencao": intencao,
+                    "motivo": motivo,
+                    "observacao": observacao,
+                    "student_name": student_name,
+                    "class_name": class_name,
+                    "ra": ra,
+                    "tipo_responsavel": tipo_responsavel,
+                    "data_hora": data_hora,
+                    "campaign_id": campaign_id,
+                    "origem": "whatsapp_inbound",
+                    "raw_payload": payload,
+                }
+            )
+        except Exception as e:
+            logger.error("Erro critico ao salvar_interacao | telefone=%s | msg=%s", telefone, str(e))
 
         logger.info(
-            "Webhook processado | telefone=%s | aluno=%s | intencao=%s | motivo=%s | campaign=%s",
+            "Webhook INBOUND processado e salvo (Supabase/Sheets) | telefone=%s | aluno=%s | intencao=%s",
             telefone,
             student_name or "(desconhecido)",
             intencao,
-            motivo,
-            campaign_id or "(sem campanha)",
         )
+
+        logger.info("INBOUND END")
 
         return {
             "telefone": telefone,
@@ -149,40 +178,43 @@ class WebhookService:
 
     # ── Helpers privados ────────────────────────────────────────────────────
 
-    def _normalize_and_validate_phone(self, payload: dict[str, Any]) -> str | None:
+    def _normalize_and_validate_phone(self, raw: str | Any) -> str | None:
         """
-        Normaliza e valida o telefone do payload.
+        Normaliza e valida o telefone bruto.
         Retorna o telefone limpo (apenas dígitos, com 55...) ou None se inválido.
 
         Regras:
-          - @lid → None (grupo / evento interno)
-          - @s.whatsapp.net → remove sufixo
-          - resultado com < 10 dígitos → None (inválido)
-          - adiciona prefixo 55 se ausente
+          - Resolve sufixos de dispositivo (ex: 5514...:1 -> 5514...)
+          - @lid -> Aceita a string para processamento via repository.resolver_contexto_aluno
+          - @g.us -> None (grupo)
+          - @s.whatsapp.net -> remove sufixo
+          - Vazio / < 10 dígitos / etc -> None
         """
-        raw = (
-            payload.get("data", {}).get("key", {}).get("remoteJid")
-            or payload.get("phone")
-            or payload.get("from")
-            or ""
-        )
         raw = str(raw).strip()
 
+        if not raw:
+            return None
+
         # Grupos e eventos internos da Evolution API
-        if "@lid" in raw:
+        if "@g.us" in raw:
             logger.info("telefone ignorado (grupo) | raw=%s", raw)
             return None
 
-        # Remover sufixo WhatsApp e caracteres especiais
-        cleaned = raw.replace("@s.whatsapp.net", "").replace("+", "").strip()
+        # Isolar a parte antes de '@' e ':'
+        # Ex: 5514912345678:1@s.whatsapp.net -> 5514912345678
+        is_lid_explicit = "@lid" in raw
+        cleaned = raw.split("@")[0].split(":")[0].replace("+", "").strip()
         digits = "".join(ch for ch in cleaned if ch.isdigit())
+
+        # Se for um LID, o número de dígitos é bem maior (geralmente 15+)
+        is_lid_by_len = len(digits) > 13 and digits.startswith("5524")
 
         if len(digits) < 10:
             logger.warning("telefone invalido | raw=%s | digits=%s", raw, digits)
             return None
 
-        # Garantir prefixo Brasil
-        if not digits.startswith("55"):
+        # Garantir prefixo Brasil (exceto para prováveis LIDs que já começam com 55 ou são ids internos)
+        if not digits.startswith("55") and len(digits) in (10, 11):
             digits = f"55{digits}"
 
         return digits

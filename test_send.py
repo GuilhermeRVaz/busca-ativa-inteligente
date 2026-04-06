@@ -1,0 +1,1 @@
+import requests, sys; sys.path.append('.'); from core.config import settings; body={'number': '5514981324832', 'text': 'teste lid 1'}; res=requests.post('http://localhost:8080/message/sendText/escola-decia', json=body, headers={'apikey': settings.evolution_api_key}); print(res.json())
